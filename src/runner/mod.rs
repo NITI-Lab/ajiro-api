@@ -292,9 +292,13 @@ fn render_expect(e: &Expect, vars: &Vars) -> Result<Expect, template::TemplateEr
         if let Some(eq) = &b.equals {
             b.equals = Some(render_value(eq, vars)?);
         }
-        for v in b.match_.values_mut() {
-            *v = render_value(v, vars)?;
+        let mut rendered = indexmap::IndexMap::new();
+        for (k, v) in &b.match_ {
+            // Templates are allowed in JSONPath keys too, e.g.
+            // `$.items[?(@.id == '{{ todoId }}')].title`.
+            rendered.insert(render_text(k, vars)?, render_value(v, vars)?);
         }
+        b.match_ = rendered;
         if let Some(c) = &b.contains {
             b.contains = Some(render_text(c, vars)?);
         }
@@ -531,9 +535,10 @@ impl Run<'_> {
             )
         };
 
-        // headers
+        // headers (an empty value removes the header, e.g. to test a request
+        // without `Authorization`)
         let mut headers: Vec<(String, String)> = Vec::new();
-        for (k, v) in &header_defs {
+        for (k, v) in header_defs.iter().filter(|(_, v)| !v.is_empty()) {
             let rv = render_text(v, &self.vars)
                 .map_err(|e| ctx(&format!("request.headers.{}", k), e))?;
             headers.push((k.clone(), rv));

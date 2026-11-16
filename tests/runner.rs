@@ -443,9 +443,9 @@ tests:
           $.items[0]["name"]: { $regex: "^app" }
           $.items[0].tags: { $contains: a }
           $.items: { $len: 2 }
-          $.items[*].name: { $oneOf: [apple, kiwi] }
+          $.items[*].name: { $contains: pear }   # all matches, not just the first
           $.total: { $gt: 1 }
-          $..total: { $gte: 2 }
+          $..total: { $len: { $gte: 1 } }
           $['total']: { $lt: 3 }
           $[ 'total' ]: { $lte: 2 }
           $.items[1].id: { $ne: 5 }

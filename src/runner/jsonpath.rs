@@ -10,6 +10,22 @@ pub fn query_first<'a>(value: &'a Value, path: &str) -> Result<Option<&'a Value>
     Ok(p.query(value).first())
 }
 
+/// True when `path` can select more than one node (wildcards, recursive
+/// descent, filters, slices, unions).
+pub fn is_multi(path: &str) -> bool {
+    path.contains('*')
+        || path.contains("..")
+        || path.contains("[?")
+        || path.contains(':')
+        || path.contains(',')
+}
+
+/// All matches of `path`, cloned. `Err` = invalid JSONPath.
+pub fn query_all(value: &Value, path: &str) -> Result<Vec<Value>, String> {
+    let p = JsonPath::parse(path).map_err(|e| format!("invalid JSONPath `{}`: {}", path, e))?;
+    Ok(p.query(value).all().into_iter().cloned().collect())
+}
+
 // ---------------------------------------------------------------- mutate ---
 
 #[derive(Debug, Clone, PartialEq)]

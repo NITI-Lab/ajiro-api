@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { requireAuth } from "../auth.js";
-import { createTodo, deleteTodo, findByTitle, getTodo, listTodos, updateTodo } from "../store.js";
+import { createTodo, deleteTodo, findByTitle, getTodo, listTodos, todoStats, updateTodo } from "../store.js";
 
 export const todoRoutes = new Hono();
 
@@ -21,6 +21,9 @@ todoRoutes.get("/", (c) => {
   }
   return c.json({ items: listTodos(done === undefined ? undefined : done === "true") });
 });
+
+// Must be registered before "/:id" so "stats" is not treated as an id.
+todoRoutes.get("/stats", (c) => c.json(todoStats()));
 
 todoRoutes.post("/", async (c) => {
   const body = await c.req.json().catch(() => null);

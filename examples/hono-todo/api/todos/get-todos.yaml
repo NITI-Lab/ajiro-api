@@ -1,7 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
 version: 1
 id: todos.list
+# update marks the shared todo done, so the done=true filter has something to return
+depends_on: [todos.create, todos.update]
 request:
+  headers:
+    Authorization: "Bearer {{ token }}"
   method: GET
   path: /todos
   query:
@@ -12,4 +16,38 @@ source:
   file: src/routes/todos.ts
   line: 17
 # written by humans and AI — scan never touches this
-tests: []
+tests:
+  - name: lists todos including the created one
+    expect:
+      status: 200
+      body:
+        match:
+          $.items[*].id: { $contains: "{{ todoId }}" }
+  - name: filters done=false
+    request: { query: { done: "false" } }
+    expect:
+      status: 200
+      body:
+        match:
+          $.items: { $type: array }
+          $.items[?@.done == true]: { $len: 0 }
+  - name: filters done=true
+    request: { query: { done: "true" } }
+    expect:
+      status: 200
+      body:
+        match:
+          $.items: { $type: array }
+          $.items[?@.done == true]: { $len: { $gte: 1 } }
+          $.items[?@.done == false]: { $len: 0 }
+  - name: rejects an invalid done value
+    request: { query: { done: maybe } }
+    expect:
+      status: 400
+      body:
+        match:
+          $.error: validation_error
+  - name: rejects a missing token
+    request: { headers: { Authorization: "" } }
+    expect:
+      status: 401

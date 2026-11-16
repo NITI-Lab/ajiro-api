@@ -36,6 +36,7 @@ tests:
   - name: creates a user            # required, unique in file
     request:                        # optional overrides of `request`
       headers: { X-Trace: abc }     # params/query/headers merge key by key
+                                    # header value "" removes the header (e.g. Authorization: "" to test 401)
       body: { name: Hanako }        # objects deep-merge; null removes a key; other types replace
     expect:
       status: 201                   # or [200, 204]
@@ -66,15 +67,26 @@ tests:
 | `{ $type: string }` | `string` `number` `integer` `boolean` `array` `object` `null` |
 | `{ $regex: "^usr_" }` | string matches regex |
 | `{ $contains: x }` | substring / array element |
-| `{ $len: 3 }` | length of array / string / object |
+| `{ $len: 3 }` / `{ $len: { $gte: 1 } }` | length of array / string / object (exact, or a numeric matcher) |
 | `{ $gt: 0 }` `{ $gte: 0 }` `{ $lt: 10 }` `{ $lte: 10 }` | numeric comparison |
 | `{ $ne: x }` | not equal |
 | `{ $oneOf: [open, done] }` | equals one of the values |
 
+## JSONPath rules
+
+- Syntax is RFC 9535: filters are `[?@.done == true]`, `[?@.price < 10 && @.tag == 'a']`, regex via `[?match(@.id, '^usr_')]` / `search(...)`. (`=~` is not supported.)
+- A **singular** path (`$.a.b`, `$.items[0].id`) compares the single value.
+- A path that can select **several** nodes (`[*]`, `..`, `[?...]`, slices) is compared as the **array of all matches**:
+  - `$.items[*].id: { $contains: "{{ todoId }}" }` — some item has that id
+  - `$.items[?@.done == true]: { $len: { $gte: 1 } }` — at least one done item
+  - `$.items[?@.done == false]: { $len: 0 }` — none open
+  - `{ $exists: false }` passes when nothing matches.
+
 ## Templates
 
 - `{{ name }}`: captured variable or environment `variables` from `ajiro-api.yaml`.
-- `{{ env.NAME }}`: value from the `.env` file (never from the process environment). Use it for secrets.
+- `{{ env.NAME }}`: value from the `.env` file, falling back to the process environment (so CI can pass secrets as env vars). Use it for secrets.
+- Templates also work inside `match` keys: `$.items[?@.id == '{{ todoId }}'].title: Buy milk`.
 - Built-ins: `{{ $uuid }}`, `{{ $timestamp }}`, `{{ $timestampMs }}`, `{{ $isoDate }}`, `{{ $randomInt }}`, `{{ $randomEmail }}`.
 
 ## Mock
@@ -181,3 +193,13 @@ tests:
 ```
 
 `status` is one of `passed`, `failed`, `skipped`, `error` (error = could not run: connection refused, template error). `failures[].check` is one of `status`, `header`, `body.equals`, `body.schema`, `body.match`, `body.snapshot`, `body.contains`, `max_ms`, `capture`.
+
+## How `depends_on` executes
+
+- Each endpoint file runs **once** per `test` run, all its tests in order. Order = topological by `depends_on`, otherwise by file path.
+- Captures are **global** for the rest of the run: every dependent sees the same `{{ todoId }}`.
+- So a destructive endpoint (DELETE) that uses a shared capture must depend on every endpoint that reads it, or it will delete the resource before they run:
+  `depends_on: [todos.create, todos.get, todos.update, todos.list]`.
+  Alternatively, let the DELETE file create its own resource in a first test (request override `method: POST`, `path: /todos`) and capture a separate variable.
+- `ajiro-api test <filter>` also runs the dependencies of matching endpoints (with all their tests), so captures exist.
+- Server state is shared across the run. Assert counts with `$gte` or capture a value before and compare after, or expose a test-only reset endpoint called by a first test.

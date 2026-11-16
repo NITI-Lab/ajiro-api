@@ -273,7 +273,7 @@
         },
         "$regex": { "type": "string", "description": "Regular expression the string value must match." },
         "$contains": { "description": "String: substring. Array: must contain this element." },
-        "$len": { "type": "integer", "minimum": 0, "description": "Length of the array / string / object." },
+        "$len": { "description": "Length of the array / string / object: an exact integer, or a numeric matcher object such as { \"$gte\": 1 }. For multi-node paths ([*], .., [?...]) the value is the array of all matches.", "oneOf": [ { "type": "integer", "minimum": 0 }, { "type": "object", "minProperties": 1, "maxProperties": 1, "properties": { "$gt": { "type": "number" }, "$gte": { "type": "number" }, "$lt": { "type": "number" }, "$lte": { "type": "number" }, "$ne": { "type": "number" } }, "additionalProperties": false } ] },
         "$gt": { "type": "number", "description": "Value must be greater than." },
         "$gte": { "type": "number", "description": "Value must be greater than or equal to." },
         "$lt": { "type": "number", "description": "Value must be less than." },

@@ -131,7 +131,7 @@ mock: {}
 | `{ $type: string }` | 型。`string` `number` `integer` `boolean` `array` `object` `null` |
 | `{ $regex: "^usr_" }` | 文字列が正規表現に一致 |
 | `{ $contains: x }` | 文字列の部分一致、または配列に要素を含む |
-| `{ $len: 3 }` | 配列・文字列・オブジェクトの長さ |
+| `{ $len: 3 }` / `{ $len: { $gte: 1 } }` | 配列・文字列・オブジェクトの長さ（完全一致、または数値マッチャー） |
 | `{ $gt: 0 }` `{ $gte: 0 }` `{ $lt: 10 }` `{ $lte: 10 }` | 数値の比較 |
 | `{ $ne: x }` | 等しくない |
 | `{ $oneOf: [open, done] }` | いずれかに等しい |
@@ -145,6 +145,14 @@ expect:
       $.items[0].id: { $type: string }
       $.status: { $oneOf: [open, done] }
 ```
+
+**JSONPathの扱い**
+
+- 構文は RFC 9535 です。フィルターは `[?@.done == true]`、正規表現は `[?match(@.id, '^usr_')]` と書きます（`=~` は使えません）。
+- `$.a.b` のように1つの値を指すパスは、その値と比較します。
+- `[*]`・`..`・`[?...]` のように複数の値を指しうるパスは、**一致したすべての値の配列**と比較します。例: `$.items[*].id: { $contains: "{{ todoId }}" }`、`$.items[?@.done == true]: { $len: { $gte: 1 } }`。何も一致しない場合、`{ $exists: false }` は成功します。
+- `match` のキー（JSONPath）にもテンプレートを書けます。
+- テストの `request.headers` で値を `""` にすると、そのヘッダーは送信されません（例: `Authorization: ""` で401を確認）。
 
 #### `capture`
 
@@ -183,7 +191,7 @@ mock:
 | 書き方 | 意味 |
 | --- | --- |
 | `{{ name }}` | `capture` した変数、または環境の `variables` |
-| `{{ env.NAME }}` | `.env` ファイルの値（`.env` のみ。プロセスの環境変数は参照しない） |
+| `{{ env.NAME }}` | `.env` ファイルの値。無ければプロセスの環境変数（CIではSecretsを環境変数で渡せます） |
 | `{{ $uuid }}` | UUID |
 | `{{ $timestamp }}` | UNIX時刻（秒） |
 | `{{ $timestampMs }}` | UNIX時刻（ミリ秒） |

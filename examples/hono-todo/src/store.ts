@@ -46,3 +46,9 @@ export function updateTodo(id: string, patch: Partial<Pick<Todo, "title" | "done
 export function deleteTodo(id: string): boolean {
   return todos.delete(id);
 }
+
+export function todoStats(): { total: number; done: number; open: number } {
+  const all = [...todos.values()];
+  const done = all.filter((t) => t.done).length;
+  return { total: all.length, done, open: all.length - done };
+}

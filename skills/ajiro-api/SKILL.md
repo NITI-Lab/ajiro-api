@@ -46,10 +46,11 @@ After implementing or changing endpoints:
 ## 2. Rules
 
 - **Never edit `source:`.** `scan` owns it. Everything else (`tests`, `mock`, `summary`, `tags`, `depends_on`) is yours.
-- **Never put secrets in YAML.** Use `{{ env.NAME }}` (read from `.env` only) or environment `variables` in `ajiro-api.yaml`. Do not commit `.env`. Secrets are masked as `***` in output.
+- **Never put secrets in YAML.** Use `{{ env.NAME }}` (read from `.env`, falling back to process env vars) or environment `variables` in `ajiro-api.yaml`. Do not commit `.env`. Secrets are masked as `***` in output.
 - **Use `ignore` for volatile fields** (`$.id`, `$.createdAt`, tokens) when using `equals` or `snapshot`.
 - **Prefer `match` + `schema` over `equals`.** Assert the fields that matter instead of the whole body.
-- **Use `depends_on` + `capture` for auth chains.** Capture the token once in `auth.login...` and use `{{ token }}` in dependents.
+- **Use `depends_on` + `capture` for auth chains.** Capture the token once in `auth.login...` and use `{{ token }}` in dependents. Read "How `depends_on` executes" in reference.md before writing DELETE tests: captures are shared, so order matters.
+- **`scan` writes `tests: []`.** Replace that line with your list; do not add a second `tests:` key (it fails validation).
 - **Do not weaken assertions just to get green.** Do not delete failing tests, loosen status checks, or add `skip: true` to hide a real bug. If a test is wrong, fix it to express the intended behaviour.
 - **Update snapshots only when the change is intended**: `ajiro-api test -u` overwrites stored snapshots. Review the diff of `api/__snapshots__/` before committing.
 - Tests that create data should use unique values (`{{ $randomEmail }}`, `{{ $uuid }}`) so re-runs do not collide.

@@ -538,7 +538,14 @@ fn eval_matcher(op: &str, arg: &Value, actual: Option<&Value>) -> (bool, String)
                         Value::Object(m) => Some(m.len()),
                         _ => None,
                     };
-                    len.is_some_and(|l| arg.as_u64() == Some(l as u64))
+                    match (len, as_matcher(arg)) {
+                        // `$len: { $gte: 1 }`
+                        (Some(l), Some((op2, arg2))) => {
+                            eval_matcher(op2, arg2, Some(&Value::from(l as u64))).0
+                        }
+                        (Some(l), None) => arg.as_u64() == Some(l as u64),
+                        (None, _) => false,
+                    }
                 }
                 "$gt" => matches!((a.as_f64(), num(arg)), (Some(x), Some(y)) if x > y),
                 "$gte" => matches!((a.as_f64(), num(arg)), (Some(x), Some(y)) if x >= y),
@@ -581,7 +588,36 @@ fn check_match(ctx: &Context, path: &str, expected: &Value, out: &mut Outcome) {
         ));
         return;
     };
-    let actual = match jsonpath::query_first(json, path) {
+    // A path that can select several nodes (`$.items[*].id`, filters, `..`)
+    // is compared as the array of ALL matches, so `$contains`, `$len` and
+    // equality see every element. For `$exists`, an empty result = absent.
+    let multi_holder: Option<Value> = if jsonpath::is_multi(path) {
+        match jsonpath::query_all(json, path) {
+            Ok(all) => Some(Value::Array(all)),
+            Err(msg) => {
+                out.failures.push(fail(
+                    "body.match",
+                    Some(path.to_string()),
+                    expected.clone(),
+                    Value::Null,
+                    msg,
+                ));
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let looked_up = match &multi_holder {
+        Some(Value::Array(all))
+            if all.is_empty() && matches!(as_matcher(expected), Some(("$exists", _))) =>
+        {
+            Ok(None)
+        }
+        Some(v) => Ok(Some(v)),
+        None => jsonpath::query_first(json, path),
+    };
+    let actual = match looked_up {
         Ok(a) => a,
         Err(msg) => {
             out.failures.push(fail(

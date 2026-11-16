@@ -71,3 +71,30 @@ jobs:
           for i in 1 2 3 4 5 6 7 8 9 10; do ./target/release/ajiro-api --version > /dev/null; done
           end=$(date +%s%N)
           echo "average startup: $(( (end - start) / 10 / 1000000 )) ms (10 runs of --version)"
+
+  e2e-example:
+    name: end-to-end on examples/hono-todo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release
+      - name: Start the example server
+        working-directory: examples/hono-todo
+        run: |
+          npm ci
+          npm start > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:3000/health > /dev/null && exit 0; sleep 1; done
+          cat server.log; exit 1
+      - name: scan --check, validate, test
+        working-directory: examples/hono-todo
+        env:
+          DEMO_PASSWORD: demo-password
+        run: |
+          ../../target/release/ajiro-api scan --check
+          ../../target/release/ajiro-api validate
+          ../../target/release/ajiro-api test --junit report.junit.xml
