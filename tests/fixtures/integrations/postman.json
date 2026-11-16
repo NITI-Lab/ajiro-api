@@ -1,0 +1,89 @@
+{
+  "info": {
+    "name": "Shop",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "token", "value": "dev-token" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Get user",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Debug", "value": "1", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/:id?verbose=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", ":id"],
+              "query": [
+                { "key": "verbose", "value": "true" },
+                { "key": "off", "value": "x", "disabled": true }
+              ],
+              "variable": [{ "key": "id", "value": "42" }]
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.test('ok', function () {});"] } }
+          ],
+          "response": [
+            {
+              "name": "ok",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\"id\": 42, \"name\": \"Alice\"}"
+            },
+            {
+              "name": "missing",
+              "code": 404,
+              "body": "{\"error\": \"not found\"}"
+            }
+          ]
+        },
+        {
+          "name": "Create user",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{email}}\", \"name\": \"Bob\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/users"
+          },
+          "response": [
+            { "name": "created", "code": 201, "body": "{\"id\": 1}" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Login",
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "user", "value": "{{user}}" },
+            { "key": "pass", "value": "secret", "disabled": true }
+          ]
+        },
+        "url": { "raw": "http://localhost:3000/auth/login", "host": ["localhost"], "path": ["auth", "login"] }
+      }
+    }
+  ]
+}
