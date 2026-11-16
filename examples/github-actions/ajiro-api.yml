@@ -1,0 +1,73 @@
+# Sample workflow: run ajiro-api regression tests in CI.
+# Copy to .github/workflows/ajiro-api.yml and adapt the "Start the app" step.
+name: API tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  api-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Secrets are read from .env via {{ env.NAME }} in the YAML.
+      - name: Create .env from repository secrets
+        run: |
+          {
+            echo "DEMO_PASSWORD=${{ secrets.DEMO_PASSWORD }}"
+          } > .env
+
+      - name: Start the app in the background
+        run: |
+          nohup npm start > app.log 2>&1 &
+          echo $! > app.pid
+
+      - name: Wait for the port
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:3000/; then echo "ready"; exit 0; fi
+            sleep 1
+          done
+          echo "app did not start"; cat app.log; exit 1
+
+      # Fails (exit 1) when the YAML no longer matches the routes in the code.
+      - name: Check YAML is up to date
+        run: npx -y ajiro-api scan --check
+
+      - name: Run API tests
+        run: npx -y ajiro-api test --env ci --junit report.xml
+
+      - name: Publish JUnit report
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: report.xml
+
+      - name: Upload reports and app log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-test-report
+          path: |
+            report.xml
+            app.log
+
+      - name: Stop the app
+        if: always()
+        run: kill "$(cat app.pid)" || true

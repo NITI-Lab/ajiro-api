@@ -1,1 +1,351 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"TODO"}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json",
+  "title": "Ajiro API endpoint file",
+  "description": "One endpoint = one YAML file at api/<resource>/<method>-<path>.yaml. `source` is written by `ajiro-api scan` only; `tests` and `mock` are written by humans and AI agents and are never touched by scan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "id", "request"],
+  "properties": {
+    "version": {
+      "description": "Schema version of this file. Currently always 1.",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identifier, unique within the project (e.g. `users.create`, `todos.get`). Used by `depends_on`, snapshots (`api/__snapshots__/<id>/`) and the `test` filter.",
+      "examples": ["users.create", "todos.get"]
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-line summary shown in `list` and in generated docs."
+    },
+    "description": {
+      "type": "string",
+      "description": "Longer description (Markdown allowed)."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-form tags used to group endpoints (e.g. in OpenAPI export and HTML docs)."
+    },
+    "task": {
+      "type": "string",
+      "description": "Ajiro task id this endpoint belongs to (Phase 3 integration), e.g. `TSK-012`.",
+      "examples": ["TSK-012"]
+    },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Endpoint ids that must run before this one. Their captured variables become available as `{{ name }}`. Use it for auth chains (e.g. `auth.login.create` captures `token`). Unknown ids are reported by `validate`.",
+      "examples": [["auth.login.create"]]
+    },
+    "request": { "$ref": "#/$defs/request" },
+    "source": { "$ref": "#/$defs/source" },
+    "tests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/test" },
+      "description": "Test cases written by humans and AI. `scan` never touches this field. If empty, `ajiro-api test` runs an implicit `smoke` test (status < 500).",
+      "default": []
+    },
+    "mock": { "$ref": "#/$defs/mock" }
+  },
+  "$defs": {
+    "templateValue": {
+      "description": "Any JSON/YAML value. Strings may contain templates: `{{ var }}` (captured or environment variable), `{{ env.NAME }}` (from .env only), and built-ins `{{ $uuid }}`, `{{ $timestamp }}`, `{{ $timestampMs }}`, `{{ $isoDate }}`, `{{ $randomInt }}`, `{{ $randomEmail }}`."
+    },
+    "method": {
+      "type": "string",
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+      "description": "Upper-case HTTP method."
+    },
+    "valueMap": {
+      "type": "object",
+      "description": "Map of name to value. Strings may contain templates such as `{{ var }}`.",
+      "additionalProperties": { "$ref": "#/$defs/templateValue" }
+    },
+    "stringMap": {
+      "type": "object",
+      "description": "Map of name to string. Strings may contain templates such as `{{ env.API_TOKEN }}`.",
+      "additionalProperties": { "type": "string" }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path"],
+      "description": "The base request of the endpoint. Each test may override parts of it with `tests[].request`.",
+      "properties": {
+        "method": { "$ref": "#/$defs/method" },
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "OpenAPI-style path starting with `/`, with `{param}` placeholders (e.g. `/users/{id}`).",
+          "examples": ["/users", "/todos/{id}"]
+        },
+        "params": {
+          "$ref": "#/$defs/valueMap",
+          "description": "Values for `{param}` placeholders in `path`. Templates allowed (e.g. `id: \"{{ todoId }}\"`)."
+        },
+        "query": {
+          "$ref": "#/$defs/valueMap",
+          "description": "Query string parameters."
+        },
+        "headers": {
+          "$ref": "#/$defs/stringMap",
+          "description": "Request headers. Never write secrets here; use `{{ env.NAME }}`."
+        },
+        "body": {
+          "$ref": "#/$defs/templateValue",
+          "description": "Request body. Any YAML value; objects/arrays are sent as JSON. Strings inside are templated."
+        }
+      }
+    },
+    "requestOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Overrides applied on top of the endpoint `request` for one test case. `params`, `query` and `headers` are merged key by key; `body` objects are deep-merged (a `null` value removes the key); any other body type replaces the base body.",
+      "properties": {
+        "method": { "$ref": "#/$defs/method" },
+        "path": { "type": "string", "pattern": "^/", "description": "Replace the request path." },
+        "params": { "$ref": "#/$defs/valueMap" },
+        "query": { "$ref": "#/$defs/valueMap" },
+        "headers": { "$ref": "#/$defs/stringMap" },
+        "body": { "$ref": "#/$defs/templateValue" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["framework", "file", "line"],
+      "description": "Where the route handler lives in the code. Written by `ajiro-api scan` only. Do not edit it by hand.",
+      "properties": {
+        "framework": {
+          "type": "string",
+          "enum": ["nextjs", "hono", "fastapi", "express", "go-nethttp", "go-chi", "go-echo"],
+          "description": "Framework the route was detected in."
+        },
+        "file": {
+          "type": "string",
+          "description": "Source file path relative to the project root, `/`-separated.",
+          "examples": ["src/routes/users.ts"]
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Line number of the route definition."
+        },
+        "handler": {
+          "type": "string",
+          "description": "Handler / function name when known."
+        }
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "One test case: the (overridden) request is sent and the response is checked against `expect`.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Test name, unique within the file. Also used for the snapshot file name (`api/__snapshots__/<id>/<slug>.json`).",
+          "examples": ["creates a user", "メール重複は409"]
+        },
+        "request": { "$ref": "#/$defs/requestOverride" },
+        "expect": { "$ref": "#/$defs/expect" },
+        "capture": {
+          "type": "object",
+          "description": "Variables to capture from the response for later tests and for endpoints that `depends_on` this one. Value: a JSONPath (`$.token`), `header:<Header-Name>`, `status`, or `body` (the whole body).",
+          "additionalProperties": {
+            "type": "string",
+            "description": "`$.jsonpath` | `header:Name` | `status` | `body`",
+            "examples": ["$.id", "header:Location", "status", "body"]
+          },
+          "examples": [{ "userId": "$.id", "location": "header:Location" }]
+        },
+        "skip": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip this test (reported as skipped)."
+        },
+        "only_env": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Run only in these environments (names from ajiro-api.yaml). Empty or omitted = all environments.",
+          "examples": [["local", "ci"]]
+        }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Assertions on the response. Omitted fields are not checked.",
+      "properties": {
+        "status": {
+          "description": "Expected HTTP status: one integer, or an array of accepted statuses.",
+          "oneOf": [
+            { "type": "integer", "minimum": 100, "maximum": 599 },
+            {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 100, "maximum": 599 },
+              "minItems": 1
+            }
+          ],
+          "examples": [200, [200, 204]]
+        },
+        "headers": {
+          "type": "object",
+          "description": "Header name (case-insensitive) to expected value. A value starting and ending with `/` is a regex (e.g. `/^application\\/json/`).",
+          "additionalProperties": { "type": "string" },
+          "examples": [{ "content-type": "/^application\\/json/" }]
+        },
+        "body": { "$ref": "#/$defs/bodyExpect" },
+        "ignore": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "JSONPaths excluded from `body.equals` and `body.snapshot` comparison (volatile values such as ids and timestamps).",
+          "examples": [["$.id", "$.createdAt"]]
+        },
+        "max_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum response time in milliseconds."
+        }
+      }
+    },
+    "bodyExpect": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Body assertions. Several can be combined; all must pass. Prefer `match` + `schema` over `equals`.",
+      "properties": {
+        "equals": {
+          "$ref": "#/$defs/templateValue",
+          "description": "Exact match against the whole JSON body (after removing `ignore` paths). Brittle: prefer `match` and `schema`."
+        },
+        "schema": {
+          "description": "JSON Schema the body must satisfy: a path relative to the endpoint YAML file (e.g. `./schemas/user.json`), or an inline schema object.",
+          "oneOf": [
+            { "type": "string", "examples": ["./schemas/user.json"] },
+            { "type": "object" }
+          ]
+        },
+        "match": {
+          "type": "object",
+          "description": "JSONPath to expected value (partial match). The expected value is a literal, or a matcher object with exactly one key: `$exists`, `$type`, `$regex`, `$contains`, `$len`, `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$oneOf`.",
+          "additionalProperties": {
+            "anyOf": [
+              { "$ref": "#/$defs/matcher" },
+              { "$ref": "#/$defs/templateValue" }
+            ]
+          },
+          "examples": [
+            {
+              "$.email": "taro@example.com",
+              "$.id": { "$exists": true },
+              "$.items": { "$len": 3 },
+              "$.status": { "$oneOf": ["open", "done"] }
+            }
+          ]
+        },
+        "snapshot": {
+          "type": "boolean",
+          "default": false,
+          "description": "Compare the body with the stored snapshot `api/__snapshots__/<id>/<test-slug>.json`. Created on first run; update with `ajiro-api test -u`. Volatile values must be listed in `expect.ignore`."
+        },
+        "contains": {
+          "type": "string",
+          "description": "Substring that must appear in a non-JSON (text) body."
+        }
+      }
+    },
+    "matcher": {
+      "type": "object",
+      "description": "Matcher object for `expect.body.match` values. Exactly one key.",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "$exists": { "type": "boolean", "description": "true: the path must exist; false: it must be absent." },
+        "$type": {
+          "enum": ["string", "number", "integer", "boolean", "array", "object", "null"],
+          "description": "JSON type of the value."
+        },
+        "$regex": { "type": "string", "description": "Regular expression the string value must match." },
+        "$contains": { "description": "String: substring. Array: must contain this element." },
+        "$len": { "type": "integer", "minimum": 0, "description": "Length of the array / string / object." },
+        "$gt": { "type": "number", "description": "Value must be greater than." },
+        "$gte": { "type": "number", "description": "Value must be greater than or equal to." },
+        "$lt": { "type": "number", "description": "Value must be less than." },
+        "$lte": { "type": "number", "description": "Value must be less than or equal to." },
+        "$ne": { "description": "Value must not equal this." },
+        "$oneOf": { "type": "array", "description": "Value must equal one of these." }
+      },
+      "additionalProperties": false
+    },
+    "mock": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Sample responses served by `ajiro-api mock`. Select a scenario with `--scenario`, the `X-Ajiro-Scenario` header or `?__scenario=` (falls back to `default`).",
+      "properties": {
+        "default": { "$ref": "#/$defs/mockResponse" },
+        "scenarios": {
+          "type": "object",
+          "description": "Named alternative responses (e.g. `conflict`, `slow`, `server-error`).",
+          "additionalProperties": { "$ref": "#/$defs/mockResponse" }
+        }
+      },
+      "examples": [
+        {
+          "default": { "status": 201, "body": { "id": "usr_001", "name": "Taro" } },
+          "scenarios": { "conflict": { "status": 409 }, "slow": { "status": 200, "delay_ms": 3000 } }
+        }
+      ]
+    },
+    "mockResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599,
+          "default": 200,
+          "description": "HTTP status to return (default 200)."
+        },
+        "headers": { "$ref": "#/$defs/stringMap" },
+        "body": { "$ref": "#/$defs/templateValue", "description": "Response body (any YAML value; sent as JSON)." },
+        "delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Artificial latency in milliseconds."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "id": "users.create",
+      "request": {
+        "method": "POST",
+        "path": "/users",
+        "headers": { "Authorization": "Bearer {{ auth.token }}" },
+        "body": { "name": "Taro", "email": "taro@example.com" }
+      },
+      "source": { "framework": "hono", "file": "src/routes/users.ts", "line": 42 },
+      "tests": [
+        {
+          "name": "正常に作成できる",
+          "expect": {
+            "status": 201,
+            "body": { "schema": "./schemas/user.json", "match": { "$.email": "taro@example.com" } },
+            "ignore": ["$.id", "$.createdAt"]
+          },
+          "capture": { "userId": "$.id" }
+        }
+      ],
+      "mock": { "default": { "status": 201, "body": { "id": "usr_001", "name": "Taro" } } }
+    }
+  ]
+}

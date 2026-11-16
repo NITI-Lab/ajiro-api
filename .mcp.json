@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ajiro-api": {
+      "command": "npx",
+      "args": ["-y", "ajiro-api", "mcp"]
+    }
+  }
+}

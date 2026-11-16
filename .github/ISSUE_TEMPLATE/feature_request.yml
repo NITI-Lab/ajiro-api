@@ -1,0 +1,24 @@
+name: Feature request / 機能要望
+description: Suggest an improvement to the CLI, skill or docs
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [new framework support, scan, test / assertions, CI output, mock, openapi / import, mcp, skill / agent instructions, docs, other]
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
