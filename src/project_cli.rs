@@ -47,21 +47,37 @@ pub fn list(dir: &Path, args: &ListArgs) -> Result<i32> {
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "endpoints": items, "load_errors": errs }))?
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "endpoints": items, "load_errors": errs })
+            )?
         );
     } else {
         if items.is_empty() {
-            println!("No endpoints in {}/. Run `ajiro-api scan`.", project.config.api_dir);
+            println!(
+                "No endpoints in {}/. Run `ajiro-api scan`.",
+                project.config.api_dir
+            );
         }
         let w = items.iter().map(|i| i.method.len()).max().unwrap_or(0);
         for i in &items {
-            println!("{:<w$}  {:<40}  {:<28}  tests:{}", i.method, i.path, i.id, i.tests, w = w);
+            println!(
+                "{:<w$}  {:<40}  {:<28}  tests:{}",
+                i.method,
+                i.path,
+                i.id,
+                i.tests,
+                w = w
+            );
         }
         for e in &errs {
             eprintln!("error: {}: {}", e.file, e.message);
         }
     }
-    Ok(if errs.is_empty() { crate::exit::OK } else { crate::exit::FAILURE })
+    Ok(if errs.is_empty() {
+        crate::exit::OK
+    } else {
+        crate::exit::FAILURE
+    })
 }
 
 /// Load + validate everything. Returns all problems found.
@@ -77,7 +93,9 @@ pub fn validate(dir: &Path, args: &ValidateArgs) -> Result<i32> {
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "ok": errs.is_empty(), "errors": errs }))?
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "ok": errs.is_empty(), "errors": errs })
+            )?
         );
     } else if errs.is_empty() {
         println!("All endpoint files are valid.");
@@ -87,5 +105,9 @@ pub fn validate(dir: &Path, args: &ValidateArgs) -> Result<i32> {
         }
         println!("{} problem(s) found.", errs.len());
     }
-    Ok(if errs.is_empty() { crate::exit::OK } else { crate::exit::FAILURE })
+    Ok(if errs.is_empty() {
+        crate::exit::OK
+    } else {
+        crate::exit::FAILURE
+    })
 }

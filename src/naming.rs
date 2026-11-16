@@ -43,10 +43,7 @@ fn normalize_segment(seg: &str) -> String {
     }
     if seg.starts_with('{') && seg.ends_with('}') {
         let inner = &seg[1..seg.len() - 1];
-        let name = inner
-            .split([':', '.'])
-            .next()
-            .unwrap_or(inner);
+        let name = inner.split([':', '.']).next().unwrap_or(inner);
         return format!("{{{}}}", name);
     }
     if seg == "*" {
@@ -68,7 +65,8 @@ fn is_param(seg: &str) -> bool {
 }
 
 fn is_prefix_segment(seg: &str) -> bool {
-    seg == "api" || (seg.len() >= 2 && seg.starts_with('v') && seg[1..].chars().all(|c| c.is_ascii_digit()))
+    seg == "api"
+        || (seg.len() >= 2 && seg.starts_with('v') && seg[1..].chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Static (non-parameter) segments, without `api` / `v1`-style prefixes.
@@ -113,10 +111,20 @@ pub fn file_stem(method: &str, path: &str) -> String {
     let parts: Vec<String> = path
         .split('/')
         .filter(|s| !s.is_empty())
-        .map(|s| if is_param(s) { sanitize(&s[1..s.len() - 1]) } else { sanitize(s) })
+        .map(|s| {
+            if is_param(s) {
+                sanitize(&s[1..s.len() - 1])
+            } else {
+                sanitize(s)
+            }
+        })
         .filter(|s| !s.is_empty())
         .collect();
-    let tail = if parts.is_empty() { "root".to_string() } else { parts.join("-") };
+    let tail = if parts.is_empty() {
+        "root".to_string()
+    } else {
+        parts.join("-")
+    };
     format!("{}-{}", method.to_ascii_lowercase(), tail)
 }
 
@@ -134,7 +142,11 @@ pub fn endpoint_rel_path(method: &str, path: &str) -> PathBuf {
 /// - `GET /users/{id}/posts` -> `users.posts.list`
 pub fn endpoint_id(method: &str, path: &str) -> String {
     let segs = meaningful_segments(path);
-    let base = if segs.is_empty() { "root".to_string() } else { segs.join(".") };
+    let base = if segs.is_empty() {
+        "root".to_string()
+    } else {
+        segs.join(".")
+    };
     let ends_with_param = path
         .split('/')
         .rfind(|s| !s.is_empty())
@@ -179,7 +191,11 @@ pub fn slug(s: &str) -> String {
         }
     }
     let out = out.trim_matches('-').to_string();
-    if out.is_empty() { "test".into() } else { out }
+    if out.is_empty() {
+        "test".into()
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]
@@ -201,9 +217,18 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(endpoint_rel_path("POST", "/users"), Path::new("users/post-users.yaml"));
-        assert_eq!(endpoint_rel_path("GET", "/api/v1/users/{id}"), Path::new("users/get-api-v1-users-id.yaml"));
-        assert_eq!(endpoint_rel_path("GET", "/"), Path::new("root/get-root.yaml"));
+        assert_eq!(
+            endpoint_rel_path("POST", "/users"),
+            Path::new("users/post-users.yaml")
+        );
+        assert_eq!(
+            endpoint_rel_path("GET", "/api/v1/users/{id}"),
+            Path::new("users/get-api-v1-users-id.yaml")
+        );
+        assert_eq!(
+            endpoint_rel_path("GET", "/"),
+            Path::new("root/get-root.yaml")
+        );
         assert_eq!(endpoint_id("POST", "/users"), "users.create");
         assert_eq!(endpoint_id("GET", "/users"), "users.list");
         assert_eq!(endpoint_id("GET", "/api/users/{id}"), "users.get");

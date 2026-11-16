@@ -32,22 +32,28 @@ pub fn endpoint_files(api_dir: &Path) -> Vec<PathBuf> {
         .into_iter()
         .filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
-            !(e.file_type().is_dir() && (n == "__snapshots__" || n == "schemas" || n.starts_with('.')))
+            !(e.file_type().is_dir()
+                && (n == "__snapshots__" || n == "schemas" || n.starts_with('.')))
         })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .map(|e| e.into_path())
-        .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("yaml") | Some("yml")))
+        .filter(|p| {
+            matches!(
+                p.extension().and_then(|e| e.to_str()),
+                Some("yaml") | Some("yml")
+            )
+        })
         .collect();
     files.sort();
     files
 }
 
 pub fn load_endpoint_file(path: &Path) -> Result<EndpointDef> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
-    let def: EndpointDef =
-        serde_yaml::from_str(&text).with_context(|| format!("invalid endpoint file {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let def: EndpointDef = serde_yaml::from_str(&text)
+        .with_context(|| format!("invalid endpoint file {}", path.display()))?;
     Ok(def)
 }
 
@@ -59,8 +65,15 @@ pub fn load_endpoints(project: &Project) -> (Vec<LoadedEndpoint>, Vec<LoadError>
     for path in endpoint_files(&project.api_dir()) {
         let rel_path = project.rel(&path);
         match load_endpoint_file(&path) {
-            Ok(def) => ok.push(LoadedEndpoint { path, rel_path, def }),
-            Err(e) => errs.push(LoadError { file: rel_path, message: format!("{:#}", e) }),
+            Ok(def) => ok.push(LoadedEndpoint {
+                path,
+                rel_path,
+                def,
+            }),
+            Err(e) => errs.push(LoadError {
+                file: rel_path,
+                message: format!("{:#}", e),
+            }),
         }
     }
     (ok, errs)
@@ -100,11 +113,15 @@ pub fn validate(endpoints: &[LoadedEndpoint]) -> Vec<LoadError> {
         }
         for (i, t) in e.def.tests.iter().enumerate() {
             if t.name.trim().is_empty() {
-                errs.push(LoadError { file: e.rel_path.clone(), message: format!("tests[{}].name is empty", i) });
+                errs.push(LoadError {
+                    file: e.rel_path.clone(),
+                    message: format!("tests[{}].name is empty", i),
+                });
             }
         }
     }
-    let known: std::collections::HashSet<&str> = endpoints.iter().map(|e| e.def.id.as_str()).collect();
+    let known: std::collections::HashSet<&str> =
+        endpoints.iter().map(|e| e.def.id.as_str()).collect();
     for e in endpoints {
         for d in &e.def.depends_on {
             if !known.contains(d.as_str()) {

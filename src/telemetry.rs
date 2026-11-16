@@ -48,7 +48,9 @@ fn save(s: &State) -> Result<()> {
 }
 
 fn do_not_track() -> bool {
-    std::env::var("DO_NOT_TRACK").map(|v| v == "1" || v == "true").unwrap_or(false)
+    std::env::var("DO_NOT_TRACK")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
 }
 
 pub fn enabled() -> bool {
@@ -88,14 +90,20 @@ pub fn run_cli(args: &TelemetryArgs) -> Result<i32> {
             println!("Anonymous usage statistics: ON (command counts only). Disable with `ajiro-api telemetry off`.");
         }
         "off" => {
-            let s = State { enabled: false, counts: BTreeMap::new() };
+            let s = State {
+                enabled: false,
+                counts: BTreeMap::new(),
+            };
             save(&s)?;
             println!("Anonymous usage statistics: OFF. Local counts deleted.");
         }
         "status" => {
             let s = load();
             let on = s.enabled && !do_not_track();
-            println!("Anonymous usage statistics: {}", if on { "ON" } else { "OFF" });
+            println!(
+                "Anonymous usage statistics: {}",
+                if on { "ON" } else { "OFF" }
+            );
             if do_not_track() {
                 println!("(DO_NOT_TRACK is set)");
             }
