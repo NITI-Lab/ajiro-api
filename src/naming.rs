@@ -44,7 +44,7 @@ fn normalize_segment(seg: &str) -> String {
     if seg.starts_with('{') && seg.ends_with('}') {
         let inner = &seg[1..seg.len() - 1];
         let name = inner
-            .split(|c| c == ':' || c == '.')
+            .split([':', '.'])
             .next()
             .unwrap_or(inner);
         return format!("{{{}}}", name);
@@ -137,8 +137,7 @@ pub fn endpoint_id(method: &str, path: &str) -> String {
     let base = if segs.is_empty() { "root".to_string() } else { segs.join(".") };
     let ends_with_param = path
         .split('/')
-        .filter(|s| !s.is_empty())
-        .last()
+        .rfind(|s| !s.is_empty())
         .map(is_param)
         .unwrap_or(false);
     let m = method.to_ascii_uppercase();
