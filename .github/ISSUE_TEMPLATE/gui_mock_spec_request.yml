@@ -1,0 +1,26 @@
+name: GUI / mock / spec request / GUI・モック・仕様書の要望
+description: Tell us you want a GUI, a fuller mock server, or shareable spec documents (we count these)
+labels: [gui-mock-spec-request]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We use these requests to decide whether to build the paid desktop GUI (Phase 2). One request per issue, please. A 👍 on an existing issue also counts.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What do you want?
+      options: [GUI for editing endpoints, Local mock server (delays, errors, scenarios), Single-file HTML spec for clients, Test result history / diff view, Team sharing, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Your situation
+      description: Team size, who needs this (backend / frontend / PM / client), and what you do today.
+    validations:
+      required: true
+  - type: textarea
+    id: expectation
+    attributes:
+      label: What would good look like?
