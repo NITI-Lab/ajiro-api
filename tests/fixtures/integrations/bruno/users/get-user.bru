@@ -1,0 +1,25 @@
+meta {
+  name: Get user
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/users/:id?expand=1
+  body: none
+  auth: none
+}
+
+params:query {
+  expand: 1
+  ~debug: true
+}
+
+params:path {
+  id: 7
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: eq Alice
+}
