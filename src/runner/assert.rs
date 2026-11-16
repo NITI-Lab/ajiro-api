@@ -291,7 +291,7 @@ impl jsonschema::Retrieve for FileRetriever {
             )
             .into());
         }
-        let path = percent_decode(uri.path().as_str());
+        let path = file_uri_path_to_fs(uri.path().as_str());
         load_schema_file(Path::new(&path)).map_err(|e| e.into())
     }
 }
@@ -301,7 +301,7 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
+        if b[i] == b'%' && i + 3 <= b.len() {
             if let Some(v) = s
                 .get(i + 1..i + 3)
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
@@ -315,6 +315,31 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `file://` base URI for a directory. Windows paths (`C:\\x\\y`) become
+/// `file:///C:/x/y/` — the drive letter must be in the path, not the host.
+fn dir_to_file_uri(dir: &str) -> String {
+    let mut p = percent_encode_path(dir);
+    if !p.starts_with('/') {
+        p.insert(0, '/');
+    }
+    if !p.ends_with('/') {
+        p.push('/');
+    }
+    format!("file://{}", p)
+}
+
+/// Inverse of [`dir_to_file_uri`] for the path component of a `file:` URI:
+/// `/C:/x/y.json` -> `C:/x/y.json` (Windows), `/x/y.json` unchanged.
+fn file_uri_path_to_fs(path: &str) -> String {
+    let decoded = percent_decode(path);
+    let b = decoded.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        decoded[1..].to_string()
+    } else {
+        decoded
+    }
 }
 
 fn percent_encode_path(s: &str) -> String {
@@ -402,10 +427,7 @@ fn check_schema(ctx: &Context, sref: &SchemaRef, out: &mut Outcome) {
         ));
         return;
     };
-    let base = format!(
-        "file://{}/",
-        percent_encode_path(&base_dir.to_string_lossy())
-    );
+    let base = dir_to_file_uri(&base_dir.to_string_lossy());
     let validator = match jsonschema::options()
         .with_base_uri(base)
         .with_retriever(FileRetriever)
@@ -764,5 +786,20 @@ mod tests {
     #[test]
     fn percent_roundtrip() {
         assert_eq!(percent_decode(&percent_encode_path("/a b/c%d")), "/a b/c%d");
+        assert_eq!(percent_decode("/a%20"), "/a ");
+    }
+
+    #[test]
+    fn file_uris_work_for_unix_and_windows_paths() {
+        assert_eq!(dir_to_file_uri("/tmp/a b"), "file:///tmp/a%20b/");
+        assert_eq!(
+            dir_to_file_uri(r"C:\Users\RUNNER~1\Temp\api\users"),
+            "file:///C:/Users/RUNNER~1/Temp/api/users/"
+        );
+        assert_eq!(file_uri_path_to_fs("/tmp/a%20b/x.json"), "/tmp/a b/x.json");
+        assert_eq!(
+            file_uri_path_to_fs("/C:/Users/RUNNER~1/Temp/api/schemas/common.json"),
+            "C:/Users/RUNNER~1/Temp/api/schemas/common.json"
+        );
     }
 }
