@@ -1,0 +1,20 @@
+{
+  "name": "ajiro-api",
+  "owner": { "name": "NITI" },
+  "metadata": {
+    "description": "Ajiro API: API verification and spec sharing for AI coding agents"
+  },
+  "plugins": [
+    {
+      "name": "ajiro-api",
+      "source": "./",
+      "description": "Scan backend routes into YAML, run regression tests, and let the agent self-fix failures (skill + MCP server).",
+      "version": "0.1.0",
+      "author": { "name": "NITI" },
+      "homepage": "https://github.com/niti-lab/ajiro-api",
+      "license": "MIT",
+      "keywords": ["api", "testing", "openapi", "regression", "mock"],
+      "category": "testing"
+    }
+  ]
+}

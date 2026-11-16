@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
+version: 1
+id: todos.update
+depends_on: [todos.create]
+request:
+  headers:
+    Authorization: "Bearer {{ token }}"
+  method: PATCH
+  path: /todos/{id}
+# written by ajiro-api scan — do not edit
+source:
+  framework: hono
+  file: src/routes/todos.ts
+  line: 48
+# written by humans and AI — scan never touches this
+tests:
+  - name: marks the todo done
+    request: { params: { id: "{{ todoId }}" }, body: { done: true } }
+    expect:
+      status: 200
+      body:
+        match:
+          $.id: "{{ todoId }}"
+          $.done: true
+  - name: renames the todo
+    request: { params: { id: "{{ todoId }}" }, body: { title: "Renamed {{ $uuid }}" } }
+    expect:
+      status: 200
+      body:
+        match:
+          $.title: { $regex: "^Renamed " }
+  - name: rejects a non-boolean done
+    request: { params: { id: "{{ todoId }}" }, body: { done: "yes" } }
+    expect:
+      status: 400
+      body:
+        match:
+          $.error: validation_error
+  - name: rejects an empty title
+    request: { params: { id: "{{ todoId }}" }, body: { title: "" } }
+    expect:
+      status: 400
+  - name: rejects a title that belongs to another todo
+    request: { params: { id: "{{ todoId }}" }, body: { title: "{{ dupTitle }}" } }
+    expect:
+      status: 409
+  - name: returns 404 for an unknown id
+    request: { params: { id: does-not-exist }, body: { done: true } }
+    expect:
+      status: 404
+  - name: rejects a missing token
+    request: { params: { id: "{{ todoId }}" }, headers: { Authorization: "" }, body: { done: true } }
+    expect:
+      status: 401

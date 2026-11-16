@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/config.schema.json
+# Ajiro API project config. Endpoint files live in api_dir (one YAML file per endpoint).
+version: 1
+
+# Framework scanned by `ajiro-api scan`: nextjs | hono | fastapi | express | go-nethttp | go-chi | go-echo
+framework: hono
+
+# Directories to scan for routes, relative to this file.
+sources:
+  - src
+
+# Path substrings to skip while scanning (node_modules, dist, .git, ... are always skipped).
+exclude: []
+
+# Directory holding the endpoint YAML files.
+api_dir: api
+
+# Dotenv file with secrets. Reference them as {{ env.NAME }} in YAML; never commit it.
+env_file: .env
+
+# Environment used by `ajiro-api test` when --env is not given.
+default_env: local
+
+# Environments: base URL, variables ({{ name }}) and headers sent with every request.
+environments:
+  local:
+    base_url: http://localhost:3000
+    # variables:
+    #   apiVersion: v1
+    # headers:
+    #   Authorization: Bearer {{ env.API_TOKEN }}
+  # staging:
+  #   base_url: https://staging.example.com
+
+# Extra header / JSON key names to mask in logs (password, token, authorization are masked already).
+redact: []
+
+# Request timeout in milliseconds.
+timeout_ms: 10000

@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
+version: 1
+id: health.list
+request:
+  method: GET
+  path: /health
+# written by ajiro-api scan — do not edit
+source:
+  framework: hono
+  file: src/index.ts
+  line: 8
+# written by humans and AI — scan never touches this
+tests:
+  - name: reports ok without auth
+    expect:
+      status: 200
+      body:
+        match:
+          $.status: ok

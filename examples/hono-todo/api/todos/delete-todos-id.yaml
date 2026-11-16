@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
+version: 1
+id: todos.delete
+# runs after the endpoints that read/update the shared todo, because it removes it
+depends_on: [todos.create, todos.get, todos.update, todos.list]
+request:
+  headers:
+    Authorization: "Bearer {{ token }}"
+  method: DELETE
+  path: /todos/{id}
+# written by ajiro-api scan — do not edit
+source:
+  framework: hono
+  file: src/routes/todos.ts
+  line: 79
+# written by humans and AI — scan never touches this
+tests:
+  - name: deletes the todo
+    request: { params: { id: "{{ todoId }}" } }
+    expect:
+      status: 204
+  - name: returns 404 when deleting it again
+    request: { params: { id: "{{ todoId }}" } }
+    expect:
+      status: 404
+  - name: returns 404 for an unknown id
+    request: { params: { id: does-not-exist } }
+    expect:
+      status: 404
+  - name: rejects a missing token
+    request: { params: { id: "{{ todoId }}" }, headers: { Authorization: "" } }
+    expect:
+      status: 401

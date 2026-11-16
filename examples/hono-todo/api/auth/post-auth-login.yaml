@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
+version: 1
+id: auth.login.create
+request:
+  method: POST
+  path: /auth/login
+  body: { username: demo, password: "{{ env.DEMO_PASSWORD }}" }
+# written by ajiro-api scan — do not edit
+source:
+  framework: hono
+  file: src/routes/auth.ts
+  line: 6
+# written by humans and AI — scan never touches this
+tests:
+  - name: logs in and captures token
+    expect:
+      status: 200
+      body:
+        match:
+          $.token: { $regex: "^tok_" }
+    capture:
+      token: $.token
+  - name: rejects a wrong password
+    request: { body: { password: wrong-password-xyz } }
+    expect:
+      status: 401
+      body:
+        match:
+          $.error: invalid_credentials
+  - name: rejects an unknown user
+    request: { body: { username: nobody } }
+    expect:
+      status: 401
+  - name: rejects a missing password
+    request: { body: { password: null } }
+    expect:
+      status: 400
+      body:
+        match:
+          $.error: validation_error
+  - name: rejects a non-string username
+    request: { body: { username: 123 } }
+    expect:
+      status: 400

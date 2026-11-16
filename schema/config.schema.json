@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/config.schema.json",
+  "title": "Ajiro API project config (ajiro-api.yaml)",
+  "description": "Project configuration created by `ajiro-api init`. Lives at the project root; `ajiro-api` searches parent directories for it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Schema version of this file. Currently always 1."
+    },
+    "framework": {
+      "type": "string",
+      "enum": ["nextjs", "hono", "fastapi", "express", "go-nethttp", "go-chi", "go-echo"],
+      "description": "Framework to scan. Auto-detected by `init` when omitted."
+    },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["."],
+      "description": "Source directories to scan, relative to the project root.",
+      "examples": [["src"], ["app", "src"]]
+    },
+    "exclude": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Glob-ish substrings of paths to exclude from scanning (e.g. `node_modules`, `dist`).",
+      "examples": [["node_modules", "dist"]]
+    },
+    "api_dir": {
+      "type": "string",
+      "default": "api",
+      "description": "Directory holding the endpoint YAML files."
+    },
+    "env_file": {
+      "type": "string",
+      "default": ".env",
+      "description": "Dotenv file holding secrets, referenced from YAML as `{{ env.NAME }}`. Keep it out of Git."
+    },
+    "default_env": {
+      "type": "string",
+      "default": "local",
+      "description": "Environment used when `--env` is not given. Should be a key of `environments`."
+    },
+    "environments": {
+      "type": "object",
+      "default": {},
+      "description": "Named environments such as `local`, `staging`, `ci`.",
+      "additionalProperties": { "$ref": "#/$defs/environment" },
+      "examples": [
+        {
+          "local": { "base_url": "http://localhost:3000" },
+          "ci": { "base_url": "http://localhost:3000", "variables": { "adminEmail": "{{ env.ADMIN_EMAIL }}" } }
+        }
+      ]
+    },
+    "redact": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Extra header / JSON key names (case-insensitive) masked as `***` in logs and reports, in addition to the built-in ones.",
+      "examples": [["x-session-id", "ssn"]]
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 10000,
+      "description": "Request timeout in milliseconds. Override with `ajiro-api test --timeout`."
+    }
+  },
+  "$defs": {
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url"],
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "description": "Base URL of the running server. Override with `ajiro-api test --base-url`.",
+          "examples": ["http://localhost:3000", "https://staging.example.com"]
+        },
+        "variables": {
+          "type": "object",
+          "description": "Variables available as `{{ name }}` in endpoint files. Strings may use templates such as `{{ env.NAME }}`.",
+          "additionalProperties": true
+        },
+        "headers": {
+          "type": "object",
+          "description": "Headers sent with every request in this environment.",
+          "additionalProperties": { "type": "string" }
+        },
+        "env_file": {
+          "type": "string",
+          "description": "Environment-specific dotenv file (overrides the project `env_file`).",
+          "examples": [".env.staging"]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": 1,
+      "framework": "hono",
+      "sources": ["src"],
+      "api_dir": "api",
+      "default_env": "local",
+      "environments": {
+        "local": { "base_url": "http://localhost:3000", "variables": { "adminPassword": "{{ env.ADMIN_PASSWORD }}" } },
+        "staging": { "base_url": "https://staging.example.com", "env_file": ".env.staging" }
+      }
+    }
+  ]
+}

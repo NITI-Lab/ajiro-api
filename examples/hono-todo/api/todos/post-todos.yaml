@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
+version: 1
+id: todos.create
+depends_on: [auth.login.create]
+request:
+  headers:
+    Authorization: "Bearer {{ token }}"
+  method: POST
+  path: /todos
+  body: { title: "Write tests {{ $uuid }}" }
+# written by ajiro-api scan — do not edit
+source:
+  framework: hono
+  file: src/routes/todos.ts
+  line: 28
+# written by humans and AI — scan never touches this
+tests:
+  - name: creates a todo
+    expect:
+      status: 201
+      body:
+        match:
+          $.title: { $regex: "^Write tests" }
+          $.done: false
+          $.id: { $type: string }
+          $.createdAt: { $type: string }
+    capture:
+      todoId: $.id
+      todoTitle: $.title
+  - name: rejects an empty title
+    request: { body: { title: "" } }
+    expect:
+      status: 400
+      body:
+        match:
+          $.error: validation_error
+  - name: rejects a non-string title
+    request: { body: { title: 42 } }
+    expect:
+      status: 400
+  - name: rejects a title over 100 characters
+    request: { body: { title: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" } }
+    expect:
+      status: 400
+  - name: rejects a duplicate title
+    request: { body: { title: "Duplicate check {{ $uuid }}" } }
+    expect:
+      status: 201
+    capture:
+      dupTitle: $.title
+  - name: returns 409 for the same title again
+    request: { body: { title: "{{ dupTitle }}" } }
+    expect:
+      status: 409
+      body:
+        match:
+          $.error: duplicate_title
+  - name: rejects a missing token
+    request: { headers: { Authorization: "" } }
+    expect:
+      status: 401
+      body:
+        match:
+          $.error: unauthorized
