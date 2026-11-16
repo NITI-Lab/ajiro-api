@@ -1,0 +1,261 @@
+//! Route extraction for the TypeScript frameworks against fixture projects.
+
+use ajiro_api::config::Project;
+use ajiro_api::model::ProjectConfig;
+use ajiro_api::report::{ScanOptions, ScanReport};
+use ajiro_api::scan::scan_project;
+use std::path::{Path, PathBuf};
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
+fn project(root: &Path, fw: &str) -> Project {
+    let config = ProjectConfig {
+        framework: Some(fw.to_string()),
+        ..Default::default()
+    };
+    Project {
+        root: root.to_path_buf(),
+        config,
+    }
+}
+
+fn scan(fw: &str) -> ScanReport {
+    scan_project(
+        &project(&fixture(fw), fw),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn lines(r: &ScanReport) -> Vec<String> {
+    r.endpoints
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {} {}:{}",
+                e.method, e.path, e.source.file, e.source.line
+            )
+        })
+        .collect()
+}
+
+fn copy_files(fw: &str, files: &[&str], to: &Path) {
+    for f in files {
+        let dest = to.join(f);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::copy(fixture(fw).join(f), dest).unwrap();
+    }
+}
+
+#[test]
+fn nextjs_routes() {
+    let r = scan("nextjs");
+    assert_eq!(
+        lines(&r),
+        vec![
+            "GET /api/files/{path} app/api/files/[[...path]]/route.ts:1",
+            "HEAD /api/files/{path} app/api/files/[[...path]]/route.ts:2",
+            "GET /api/legacy pages/api/legacy.ts:1",
+            "POST /api/legacy pages/api/legacy.ts:1",
+            "DELETE /api/orders/{id} pages/api/orders/[id].ts:3",
+            "GET /api/orders/{id} pages/api/orders/[id].ts:3",
+            "GET /api/ping pages/api/ping/index.ts:2",
+            "GET /api/posts/{slug} app/api/posts/[...slug]/route.js:5",
+            "POST /api/posts/{slug} app/api/posts/[...slug]/route.js:5",
+            "GET /api/search app/api/search/route.ts:3",
+            "GET /api/users app/api/users/route.ts:3",
+            "POST /api/users app/api/users/route.ts:7",
+            "DELETE /api/users/{id} app/api/users/[id]/route.ts:9",
+            "GET /api/users/{id} app/api/users/[id]/route.ts:5",
+            "PUT /api/users/{id} app/api/users/[id]/route.ts:7",
+            "GET /health app/(marketing)/health/route.ts:1",
+            "GET /login app/@modal/login/route.ts:1",
+        ]
+    );
+    assert!(r.endpoints.iter().all(|e| e.source.framework == "nextjs"));
+    let handlers: Vec<_> = r
+        .endpoints
+        .iter()
+        .filter(|e| e.path == "/api/posts/{slug}" || e.path == "/api/orders/{id}")
+        .map(|e| e.source.handler.clone().unwrap())
+        .collect();
+    assert_eq!(
+        handlers,
+        vec!["orderHandler", "orderHandler", "handler", "handler"]
+    );
+}
+
+#[test]
+fn nextjs_skips_node_modules_and_writes_query_params() {
+    let dir = tempfile::tempdir().unwrap();
+    copy_files("nextjs", &["app/api/search/route.ts"], dir.path());
+    let nm = dir.path().join("node_modules/x/app");
+    std::fs::create_dir_all(&nm).unwrap();
+    std::fs::write(
+        nm.join("route.ts"),
+        "export function GET() { return new Response('x'); }",
+    )
+    .unwrap();
+    let r = scan_project(&project(dir.path(), "nextjs"), &ScanOptions::default()).unwrap();
+    assert_eq!(r.created, 1);
+    let text = std::fs::read_to_string(dir.path().join("api/search/get-api-search.yaml")).unwrap();
+    assert!(
+        text.contains("  query:\n    q: null\n    page: null\n"),
+        "{}",
+        text
+    );
+}
+
+#[test]
+fn hono_routes_with_cross_file_mounts() {
+    let r = scan("hono");
+    assert_eq!(
+        lines(&r),
+        vec![
+            "GET /any src/index.ts:11",
+            "GET /api/version src/index.ts:20",
+            "GET /health src/index.ts:10",
+            "GET /internal/admin/stats src/routes/admin.ts:5",
+            "GET /items src/routes/items.ts:12",
+            "GET /items/{id} src/routes/items.ts:11",
+            "GET /posts src/routes/posts/index.ts:5",
+            "POST /posts src/routes/posts/index.ts:5",
+            "DELETE /posts/{postId} src/routes/posts/index.ts:6",
+            "GET /posts/{postId}/comments src/routes/posts/index.ts:7",
+            "GET /users src/routes/users.ts:6",
+            "POST /users src/routes/users.ts:7",
+            "GET /users/search src/routes/users.ts:13",
+            "DELETE /users/{id} src/routes/users.ts:11",
+            "GET /users/{id} src/routes/users.ts:9",
+            "PUT /users/{id} src/routes/users.ts:10",
+        ]
+    );
+    assert!(r
+        .warnings
+        .iter()
+        .any(|w| w.contains("src/index.ts:11") && w.contains(".all()")));
+    assert!(r
+        .warnings
+        .iter()
+        .any(|w| w.contains("src/index.ts:12") && w.contains("not statically known")));
+    let handler = |p: &str, m: &str| {
+        r.endpoints
+            .iter()
+            .find(|e| e.path == p && e.method == m)
+            .unwrap()
+            .source
+            .handler
+            .clone()
+    };
+    assert_eq!(handler("/users", "GET").as_deref(), Some("listUsers"));
+    assert_eq!(handler("/users", "POST").as_deref(), Some("createUser"));
+    assert_eq!(handler("/health", "GET"), None);
+}
+
+#[test]
+fn hono_basepath_and_query_params_from_inline_handlers() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("index.ts"),
+        "import { Hono } from 'hono';\nconst app = new Hono().basePath('/v1');\napp.get('/s', (c) => c.json([c.req.query('name'), c.req.query('limit')]));\nexport default app;\n",
+    )
+    .unwrap();
+    let r = scan_project(&project(dir.path(), "hono"), &ScanOptions::default()).unwrap();
+    assert_eq!(lines(&r), vec!["GET /v1/s src/index.ts:3"]);
+    let text = std::fs::read_to_string(dir.path().join(&r.endpoints[0].file)).unwrap();
+    assert!(
+        text.contains("    name: null\n    limit: null\n"),
+        "{}",
+        text
+    );
+}
+
+#[test]
+fn hono_basepath_derived_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "import { Hono } from 'hono';\nconst app = new Hono();\nconst v1 = app.basePath('/v1');\nv1.post('/login', login);\napp.get('/', home);\nexport default app;\n",
+    )
+    .unwrap();
+    let r = scan_project(
+        &project(dir.path(), "hono"),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(lines(&r), vec!["GET / app.ts:5", "POST /v1/login app.ts:4"]);
+}
+
+#[test]
+fn express_routes_with_commonjs_and_esm_mounts() {
+    let r = scan("express");
+    assert_eq!(
+        lines(&r),
+        vec![
+            "GET /api/orders src/routes/orders.ts:6",
+            "DELETE /api/orders/{orderId} src/routes/orders.ts:8",
+            "GET /api/orders/{orderId} src/routes/orders.ts:7",
+            "GET /api/orders/{orderId}/items src/routes/order-items.ts:5",
+            "POST /api/orders/{orderId}/items src/routes/order-items.ts:6",
+            "GET /health src/app.js:8",
+            "GET /items src/app.js:15",
+            "POST /items src/app.js:16",
+            "GET /users src/routes/users.js:4",
+            "POST /users src/routes/users.js:9",
+            "GET /users/{id} src/routes/users.js:8",
+        ]
+    );
+    assert!(r.warnings.iter().any(|w| w.contains("src/app.js:18")));
+    let items = r
+        .endpoints
+        .iter()
+        .find(|e| e.path == "/items" && e.method == "GET")
+        .unwrap();
+    assert_eq!(items.source.handler.as_deref(), Some("ctrl.list"));
+}
+
+#[test]
+fn express_query_destructuring_and_node_modules() {
+    let dir = tempfile::tempdir().unwrap();
+    copy_files(
+        "express",
+        &[
+            "src/app.js",
+            "src/routes/users.js",
+            "src/routes/orders.ts",
+            "src/routes/order-items.ts",
+            "src/controllers/items.js",
+        ],
+        dir.path(),
+    );
+    let nm = dir.path().join("node_modules/express");
+    std::fs::create_dir_all(&nm).unwrap();
+    std::fs::write(
+        nm.join("index.js"),
+        "const express = require('express'); const a = express(); a.get('/nope', () => 1);",
+    )
+    .unwrap();
+    let r = scan_project(&project(dir.path(), "express"), &ScanOptions::default()).unwrap();
+    assert!(
+        !lines(&r).iter().any(|l| l.contains("/nope")),
+        "node_modules must be skipped"
+    );
+    let text = std::fs::read_to_string(dir.path().join("api/users/get-users.yaml")).unwrap();
+    assert!(
+        text.contains("    page: null\n    limit: null\n"),
+        "{}",
+        text
+    );
+}
