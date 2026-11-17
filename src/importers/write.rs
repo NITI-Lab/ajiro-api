@@ -28,7 +28,7 @@ pub struct ImportReport {
 
 /// Serialize an endpoint definition as a YAML file with the schema header.
 pub fn to_yaml(def: &EndpointDef) -> Result<String> {
-    let body = serde_yaml::to_string(def).context("cannot serialize endpoint")?;
+    let body = serde_yaml_rust2::to_string(def).context("cannot serialize endpoint")?;
     Ok(format!("{}{}", YAML_SCHEMA_HEADER, body))
 }
 
@@ -164,8 +164,8 @@ pub fn print_report(report: &ImportReport, json: bool) -> Result<()> {
                 vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             envs.insert(env.clone(), serde_json::json!({ "variables": vars }));
         }
-        let y =
-            serde_yaml::to_string(&serde_json::json!({ "environments": envs })).unwrap_or_default();
+        let y = serde_yaml_rust2::to_string(&serde_json::json!({ "environments": envs }))
+            .unwrap_or_default();
         for l in y.lines() {
             println!("  {}", l);
         }

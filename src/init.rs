@@ -337,7 +337,7 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
         .unwrap_or_else(|| default_base_url(root, framework.as_deref()));
     let sources = default_sources(root, framework.as_deref());
     let text = render_config(framework.as_deref(), &sources, &base_url);
-    serde_yaml::from_str::<ProjectConfig>(&text)
+    serde_yaml_rust2::from_str::<ProjectConfig>(&text)
         .context("internal error: generated invalid config")?;
 
     let mut created: Vec<String> = Vec::new();
@@ -387,7 +387,7 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
             "created": created,
             "updated": updated,
             "framework": framework,
-            "config": serde_json::to_value(serde_yaml::from_str::<ProjectConfig>(&text)?)?,
+            "config": serde_json::to_value(serde_yaml_rust2::from_str::<ProjectConfig>(&text)?)?,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(crate::exit::OK);

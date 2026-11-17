@@ -52,7 +52,7 @@ pub fn endpoint_files(api_dir: &Path) -> Vec<PathBuf> {
 pub fn load_endpoint_file(path: &Path) -> Result<EndpointDef> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let def: EndpointDef = serde_yaml::from_str(&text)
+    let def: EndpointDef = serde_yaml_rust2::from_str(&text)
         .with_context(|| format!("invalid endpoint file {}", path.display()))?;
     Ok(def)
 }
