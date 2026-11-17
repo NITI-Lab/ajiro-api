@@ -8,11 +8,11 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
 const PLATFORMS = {
-  "linux-x64": "@ajiro-api/cli-linux-x64",
-  "linux-arm64": "@ajiro-api/cli-linux-arm64",
-  "darwin-x64": "@ajiro-api/cli-darwin-x64",
-  "darwin-arm64": "@ajiro-api/cli-darwin-arm64",
-  "win32-x64": "@ajiro-api/cli-win32-x64",
+  "linux-x64": "@niti-lab/ajiro-api-linux-x64",
+  "linux-arm64": "@niti-lab/ajiro-api-linux-arm64",
+  "darwin-x64": "@niti-lab/ajiro-api-darwin-x64",
+  "darwin-arm64": "@niti-lab/ajiro-api-darwin-arm64",
+  "win32-x64": "@niti-lab/ajiro-api-win32-x64",
 };
 
 function resolveBinary() {

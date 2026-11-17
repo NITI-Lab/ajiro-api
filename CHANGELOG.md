@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-17
+
+### Changed
+
+- The npm platform packages that carry the native binary are named `@niti-lab/ajiro-api-<platform>-<arch>` (previously planned as `@ajiro-api/cli-<platform>-<arch>`, never published). `npx ajiro-api` is unchanged.
+
 ## [0.1.5] - 2026-11-17
 
 ### Changed

@@ -4,7 +4,7 @@
 //   node npm/scripts/build-packages.mjs --version 0.1.0 --dist dist --out npm/out
 //
 // Input : <dist>/ajiro-api-<version>-<rust-target>.tar.gz|zip (from release.yml)
-// Output: <out>/cli-<platform>-<arch>/   (@ajiro-api/cli-<platform>-<arch>)
+// Output: <out>/cli-<platform>-<arch>/   (@niti-lab/ajiro-api-<platform>-<arch>)
 //         <out>/ajiro-api/               (main package, versions pinned)
 
 import { execFileSync } from "node:child_process";
@@ -86,7 +86,7 @@ function main() {
       }
       throw new Error(`missing archive: ${archive}`);
     }
-    const name = `@ajiro-api/cli-${t.platform}-${t.arch}`;
+    const name = `@niti-lab/ajiro-api-${t.platform}-${t.arch}`;
     const pkgDir = join(outDir, `cli-${t.platform}-${t.arch}`);
     const tmp = mkdtempSync(join(tmpdir(), "ajiro-api-"));
     extract(archive, tmp, t.ext);
