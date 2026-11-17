@@ -1,10 +1,39 @@
 # Ajiro API
 
-**AIコーディングエージェントのための、API検証と仕様共有の基盤。**
+**AIが書いたAPIを、AI自身にテストさせる。**
+
+[![npm](https://img.shields.io/npm/v/ajiro-api?label=npm)](https://www.npmjs.com/package/ajiro-api) [![crates.io](https://img.shields.io/crates/v/ajiro-api)](https://crates.io/crates/ajiro-api) [![CI](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml/badge.svg)](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [English](README.md) | 日本語
 
 Ajiro API（`ajiro-api`）は、バックエンドのルーティングを静的解析してエンドポイントごとのYAMLに書き出し、そのYAMLを回帰テストとして実行し、モックとしても配信するCLIです。Claude CodeやCodexが「実装 → scan → test → 修正 → 再テスト」を人手なしで回せるように作っています。
+
+```console
+$ npx -y ajiro-api init && npx -y ajiro-api scan
++ POST /auth/login  api/auth/post-auth-login.yaml
++ GET /todos  api/todos/get-todos.yaml
++ GET /todos/stats  api/todos/get-todos-stats.yaml
+...
+hono: 8 created, 0 updated, 0 unchanged (8 endpoints, 31 ms)
+
+$ npx -y ajiro-api test        # エージェントがルートを /todos/:id より後ろに移した後
+✗ todos.stats.list / returns counts (0ms)
+    status: expected status 200, got 404
+    body.match: $.total: path not found (expected >= 1)
+    → api/todos/get-todos-stats.yaml
+    → handler: src/routes/todos.ts:83
+
+33 passed, 1 failed, 0 errors, 0 skipped (34 total) in 49ms
+```
+
+`--json` を付けると、同じ失敗がリクエスト・レスポンス本文・ハンドラの位置付きで出力されるので、エージェントはそのまま直して再実行できます。Claude Codeでは次の2行で入ります。
+
+```text
+/plugin marketplace add niti-lab/ajiro-api
+/plugin install ajiro-api@ajiro-api
+```
+
+対応フレームワーク：Next.js Route Handlers、Hono、FastAPI、Express、Go（net/http、chi、Echo）。
 
 - ローカルファースト。API定義もテスト結果も外部に送りません
 - 保存形式は標準的なYAML。エンドポイント1つにつき1ファイルなので、Gitの競合が少なく、AIが編集する範囲も狭くなります
