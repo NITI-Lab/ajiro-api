@@ -511,9 +511,11 @@ impl Modules {
             m.rels.push(rel.to_string());
             m.by_rel.insert(rel.to_string(), i);
             m.by_full.insert(abs_norm(p), i);
+            // Look up configs on the real directory: `abs_norm` gives a
+            // comparison key (`/C:/x` on Windows) that the OS cannot open.
             let cfg = p
                 .parent()
-                .map(|d| PathBuf::from(abs_norm(d)))
+                .map(Path::to_path_buf)
                 .and_then(|d| alias_cfg_for(&d, &mut cache));
             m.cfgs.push(cfg);
         }
