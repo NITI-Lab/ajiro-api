@@ -56,7 +56,7 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/ajiro-api" "dist/$NAME/"
           fi
-          cp LICENSE README.md README.en.md "dist/$NAME/"
+          cp LICENSE README.md README.ja.md "dist/$NAME/"
           cd dist
           if [[ "${{ matrix.target }}" == *windows* ]]; then
             7z a "$NAME.zip" "$NAME" > /dev/null

@@ -1,30 +1,30 @@
 # Ajiro API
 
-**AIコーディングエージェントのための、API検証と仕様共有の基盤。**
+**API verification and spec sharing for AI coding agents.**
 
-[English](README.en.md) | 日本語
+English | [日本語](README.ja.md)
 
-Ajiro API（`ajiro-api`）は、バックエンドのルーティングを静的解析してエンドポイントごとのYAMLに書き出し、そのYAMLを回帰テストとして実行し、モックとしても配信するCLIです。Claude CodeやCodexが「実装 → scan → test → 修正 → 再テスト」を人手なしで回せるように作っています。
+Ajiro API (`ajiro-api`) is a CLI that statically scans your backend routes into one YAML file per endpoint, runs those files as regression tests, and serves them as mocks. It is built so that Claude Code and Codex can run "implement -> scan -> test -> fix -> re-test" with no human in the loop.
 
-- ローカルファースト。API定義もテスト結果も外部に送りません
-- 保存形式は標準的なYAML。エンドポイント1つにつき1ファイルなので、Gitの競合が少なく、AIが編集する範囲も狭くなります
-- 単一バイナリ（Rust）。実行時にNodeやPythonは不要です
-- MITライセンス。CLI・スキル・テスト実行はすべて無料です
+- Local-first: API definitions and test results never leave your machine.
+- Plain YAML, one file per endpoint: fewer Git conflicts, and a narrow surface for AI to edit.
+- Single Rust binary: no Node or Python needed at runtime.
+- MIT licensed: the CLI, skill and test runner are free.
 
-Ajiro（WBS・タスク管理）の姉妹製品です。
+A sister product of Ajiro (WBS / task management).
 
-## なぜ作ったか
+## Why
 
-- AIにAPIを実装させると、全エンドポイントの疎通確認と「壊れていないか」の確認が人手のまま残ります。
-- 既存のHTTPクライアントは、人間がGUIでリクエストを送る前提です。AIエージェントが読み書きする前提ではありません。
-- 受託開発では、API仕様とサンプルレスポンスをフロント担当やクライアントへ渡す作業が必ず発生します。
+- When AI implements APIs, checking every endpoint and re-checking after each change stays manual.
+- Existing HTTP clients assume a human sending requests from a GUI, not an agent reading and writing files.
+- In contract work, API specs and sample responses always have to be handed to frontend developers and clients.
 
-## 30秒で試す
+## 30-second quickstart
 
-### インストール
+### Install
 
 ```bash
-# npm（インストール不要で実行）
+# npm (run without installing)
 npx -y ajiro-api --version
 
 # Homebrew
@@ -33,27 +33,27 @@ brew install niti-lab/tap/ajiro-api
 # cargo
 cargo install ajiro-api
 
-# GitHub Releases（macOS / Linux / Windows のバイナリ）
+# GitHub Releases (macOS / Linux / Windows binaries)
 # https://github.com/niti-lab/ajiro-api/releases
 ```
 
-以降のコマンドは、`ajiro-api` が使えない場合は `npx -y ajiro-api` に読み替えてください。
+If `ajiro-api` is not on your PATH, replace it with `npx -y ajiro-api` in the commands below.
 
-### 使う
+### Use
 
 ```bash
 cd your-backend-project
-ajiro-api init            # ajiro-api.yaml と api/ を作る（フレームワークは自動判定）
-ajiro-api scan            # ルーティングを読み取り、api/ にYAMLを生成
-# アプリを起動してから
-ajiro-api test            # 全エンドポイントを実行して検証
+ajiro-api init            # creates ajiro-api.yaml and api/ (framework auto-detected)
+ajiro-api scan            # reads routes and writes YAML into api/
+# start your app, then
+ajiro-api test            # runs every endpoint and checks the responses
 ```
 
-`tests:` が空のエンドポイントには、ステータスが500未満であることを確認する `smoke` テストが自動で適用されます。データを変えうる POST・PUT・PATCH・DELETE には送らず、スキップします（送るときは `ajiro-api test --smoke-unsafe`）。ログインが必要なAPIは、環境の `setup` にログインのエンドポイントを書くと最初に実行され、`capture` したトークンやCookieを環境の `headers` で全リクエストに付けられます（[YAMLリファレンス](docs/yaml-reference.md)）。
+Endpoints with empty `tests:` get an implicit `smoke` test (status < 500). It is only sent to GET, HEAD and OPTIONS; POST, PUT, PATCH and DELETE may change data and are skipped unless you pass `ajiro-api test --smoke-unsafe`. For APIs behind a login, list the login endpoint in the environment's `setup`: it runs first, and the token or cookie it captures can be sent with every request through the environment `headers` (see the [YAML reference](docs/yaml-reference.md)).
 
-## YAMLの例
+## YAML example
 
-エンドポイント1つにつきYAMLファイル1つで、`api/<リソース>/<メソッド>-<パス>.yaml` に置かれます。`source` は `scan` が書き、`tests` と `mock` は人とAIが書きます。`scan` は `source` 以外を書き換えません。
+One YAML file per endpoint, at `api/<resource>/<method>-<path>.yaml`. `scan` writes `source`; humans and AI write `tests` and `mock`. `scan` never rewrites anything except `source`.
 
 ```yaml
 # api/users/post-users.yaml
@@ -67,12 +67,12 @@ request:
   body:
     name: Taro
     email: taro@example.com
-source:            # scan が自動で更新する欄
+source:            # updated by scan
   framework: hono
   file: src/routes/users.ts
   line: 42
-tests:             # 人とAIが書く欄（scan は触らない）
-  - name: 正常に作成できる
+tests:             # written by humans and AI (scan never touches it)
+  - name: creates a user
     expect:
       status: 201
       body:
@@ -82,35 +82,35 @@ tests:             # 人とAIが書く欄（scan は触らない）
       ignore: [$.id, $.createdAt]
     capture:
       userId: $.id
-  - name: メール重複は409
+  - name: duplicate email returns 409
     request:
       body: { email: dup@example.com }
     expect:
       status: 409
-mock:              # ajiro-api mock で使う
+mock:              # used by `ajiro-api mock`
   default: { status: 201, body: { id: usr_001, name: Taro } }
   scenarios:
     conflict: { status: 409 }
 ```
 
-書き方の詳細は [docs/yaml-reference.md](docs/yaml-reference.md)、JSON Schemaは `ajiro-api schema endpoint` で取得できます（エディタの補完にも使えます）。
+See [docs/yaml-reference.md](docs/yaml-reference.md) (Japanese) and `skills/ajiro-api/reference.md` (English) for the full syntax. The JSON Schema is available via `ajiro-api schema endpoint` and works for editor completion:
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/niti-lab/ajiro-api/main/schema/endpoint.schema.json
 ```
 
-## Claude Codeで使う
+## Claude Code
 
-プラグインを入れると、スキル（実装後に scan → test → 修正 → 再実行を回す手順）とMCPサーバーが使えるようになります。
+Install the plugin to get the skill (the scan -> test -> fix -> re-run procedure) and the MCP server:
 
 ```text
 /plugin marketplace add niti-lab/ajiro-api
 /plugin install ajiro-api@ajiro-api
 ```
 
-スキルは、エージェントがHTTP APIのエンドポイントを実装・変更したときや、APIのテスト・検証を頼まれたときに働きます。手順の内容は [skills/ajiro-api/SKILL.md](skills/ajiro-api/SKILL.md) にあります。
+The skill activates when the agent implements or changes HTTP API endpoints, or when you ask it to test or verify an API. See [skills/ajiro-api/SKILL.md](skills/ajiro-api/SKILL.md).
 
-MCPサーバーだけを使う場合は、`.mcp.json` に次を追加します。
+To use only the MCP server, add this to `.mcp.json`:
 
 ```json
 {
@@ -120,114 +120,114 @@ MCPサーバーだけを使う場合は、`.mcp.json` に次を追加します�
 }
 ```
 
-公開しているツールは `scan`、`test`、`list`、`validate`、`get_endpoint`、`schema` です。
+Tools: `scan`, `test`, `list`, `validate`, `get_endpoint`, `schema`.
 
-## Codexで使う
+## Codex
 
-[docs/agents/AGENTS.snippet.md](docs/agents/AGENTS.snippet.md) の内容を、プロジェクトの `AGENTS.md` に貼り付けてください。Claude Codeスキルと同等の手順書です。
+Paste [docs/agents/AGENTS.snippet.md](docs/agents/AGENTS.snippet.md) into your project's `AGENTS.md`. It is the same procedure as the Claude Code skill.
 
-## コマンド一覧
+## Commands
 
-| コマンド | 内容 |
+| Command | Description |
 | --- | --- |
-| `ajiro-api init` | `ajiro-api.yaml` と `api/` を作る。フレームワークを自動判定 |
-| `ajiro-api scan` | ルーティングを静的解析してYAMLを生成・更新。`--check` でCI向けの差分検出、`--dry-run` で書き込まず確認 |
-| `ajiro-api test` | YAMLを実行して検証。`--json`、`--junit <FILE>`、`-u`（スナップショット更新）、`--env`、`--bail` など |
-| `ajiro-api list` | 定義済みエンドポイントの一覧 |
-| `ajiro-api validate` | YAMLの構文・スキーマ・参照（重複id、`depends_on`）を検証 |
-| `ajiro-api mock` | `mock:` のサンプルレスポンスを返すサーバーを起動（既定ポート4010） |
-| `ajiro-api mcp` | MCPサーバー（stdio）を起動 |
-| `ajiro-api openapi import / export` | OpenAPI 3.x との相互変換 |
-| `ajiro-api import postman / bruno` | PostmanコレクションやBrunoフォルダをYAMLへ変換 |
-| `ajiro-api docs` | 単一HTMLのAPI仕様書を生成 |
-| `ajiro-api schema [endpoint\|config]` | JSON Schemaを出力 |
-| `ajiro-api telemetry [on\|off\|status]` | 利用統計の同意設定（初期状態はオフ） |
+| `ajiro-api init` | Create `ajiro-api.yaml` and `api/`; detect the framework |
+| `ajiro-api scan` | Statically analyse routes and write/update YAML. `--check` for CI drift detection, `--dry-run` to preview |
+| `ajiro-api test` | Run the YAML and check responses. `--json`, `--junit <FILE>`, `-u` (update snapshots), `--env`, `--bail`, ... |
+| `ajiro-api list` | List defined endpoints |
+| `ajiro-api validate` | Validate syntax, schema and references (duplicate ids, `depends_on`) |
+| `ajiro-api mock` | Serve the `mock:` responses (default port 4010) |
+| `ajiro-api mcp` | Run the MCP server over stdio |
+| `ajiro-api openapi import / export` | Convert from/to OpenAPI 3.x |
+| `ajiro-api import postman / bruno` | Import Postman collections or Bruno folders |
+| `ajiro-api docs` | Generate a single-file HTML API reference |
+| `ajiro-api schema [endpoint\|config]` | Print the JSON Schema |
+| `ajiro-api telemetry [on\|off\|status]` | Usage statistics consent (off by default) |
 
-全フラグは [docs/cli-reference.md](docs/cli-reference.md) を参照してください。終了コードは、`0` 成功、`1` テスト失敗・差分あり・検証エラー、`2` ツール自体が実行できなかった（設定・I/Oエラー）です。
+All flags: [docs/cli-reference.md](docs/cli-reference.md) (Japanese) or `ajiro-api <command> --help`. Exit codes: `0` success, `1` tests failed / drift / validation errors, `2` the tool itself could not run (config or I/O error).
 
-`--json` の出力は、失敗箇所・期待値・実際の値・該当するソースの位置を含み、エージェントがそのまま修正に使える形です。トークンやパスワードは `***` で伏せられます。
+`--json` output contains the failing check, expected value, actual value and the source location, so an agent can fix the problem directly. Tokens and passwords are masked as `***`.
 
-## 対応フレームワーク
+## Supported frameworks
 
-| フレームワーク | `framework` の値 | 優先度 |
+| Framework | `framework` value | Priority |
 | --- | --- | --- |
-| Next.js Route Handlers | `nextjs` | Must（初回公開） |
-| Hono | `hono` | Must（初回公開） |
-| FastAPI | `fastapi` | Must（初回公開） |
-| Express | `express` | Should（公開後1ヶ月以内） |
-| Go net/http | `go-nethttp` | Should（公開後1ヶ月以内） |
-| Go chi | `go-chi` | Should（公開後1ヶ月以内） |
-| Go Echo | `go-echo` | Should（公開後1ヶ月以内） |
+| Next.js Route Handlers | `nextjs` | Must (first release) |
+| Hono | `hono` | Must (first release) |
+| FastAPI | `fastapi` | Must (first release) |
+| Express | `express` | Should (within a month after release) |
+| Go net/http | `go-nethttp` | Should (within a month after release) |
+| Go chi | `go-chi` | Should (within a month after release) |
+| Go Echo | `go-echo` | Should (within a month after release) |
 
-GraphQL、gRPC、WebSocketは対象外です。優先度は要件定義書に基づきます。
+GraphQL, gRPC and WebSocket are out of scope.
 
-## CIで使う
+## CI
 
 ```bash
-ajiro-api scan --check                          # YAMLがコードと食い違っていたら終了コード1
-ajiro-api test --env ci --junit report.xml      # JUnit XMLも出力
+ajiro-api scan --check                          # exit 1 if YAML is out of date
+ajiro-api test --env ci --junit report.xml      # also writes JUnit XML
 ```
 
-GitHub Actionsのサンプルは [examples/github-actions/ajiro-api.yml](examples/github-actions/ajiro-api.yml) にあります（インストール、アプリのバックグラウンド起動、ポート待ち、scan --check、test、JUnit公開、成果物アップロード）。
+A GitHub Actions sample is in [examples/github-actions/ajiro-api.yml](examples/github-actions/ajiro-api.yml): install, start the app in the background, wait for the port, `scan --check`, `test`, publish JUnit, upload artifacts.
 
-## OpenAPI・Postman・Brunoとの連携
+## OpenAPI, Postman and Bruno
 
 ```bash
-ajiro-api openapi import openapi.yaml           # OpenAPI 3.x → YAML（tests は保持）
-ajiro-api openapi export -o openapi.yaml        # YAML → OpenAPI 3.1
+ajiro-api openapi import openapi.yaml           # OpenAPI 3.x -> YAML (tests are kept)
+ajiro-api openapi export -o openapi.yaml        # YAML -> OpenAPI 3.1
 ajiro-api import postman collection.json        # Postman Collection v2.1
-ajiro-api import bruno ./bruno-collection       # Bruno の .bru フォルダ
+ajiro-api import bruno ./bruno-collection       # Bruno .bru folder
 ```
 
-既存ファイルの `request` と `mock` を上書きしたい場合は `--overwrite` を付けます。`tests` は常に保持されます。
+Add `--overwrite` to overwrite `request` and `mock` of existing files. `tests` are always kept.
 
-## モック
+## Mock
 
 ```bash
 ajiro-api mock                      # http://127.0.0.1:4010
-ajiro-api mock --scenario conflict  # 起動時にシナリオを指定
+ajiro-api mock --scenario conflict  # pick a scenario at startup
 ```
 
-リクエストごとに `X-Ajiro-Scenario` ヘッダーまたは `?__scenario=` クエリでシナリオを切り替えられます。シナリオが無いエンドポイントは `default` を返します。`--delay` で全レスポンスに遅延を足せます。
+Switch scenarios per request with the `X-Ajiro-Scenario` header or the `?__scenario=` query parameter. Endpoints without that scenario return `default`. `--delay` adds latency to every response.
 
-## HTML仕様書
+## HTML docs
 
 ```bash
 ajiro-api docs -o api-docs.html --title "My API"
 ```
 
-ブラウザだけで開ける1ファイルです。Swaggerの環境を用意できない相手にもそのまま渡せます。
+A single file that opens in any browser, so you can hand it to people who cannot set up Swagger.
 
-## 他のツールとの比較
+## Comparison
 
-差別化の軸は、AIエージェントが主な利用者であること、独自形式ではない標準YAMLであること、人数課金をしないことです。料金は2026年11月時点の公式ページによる情報です（年払い表示）。
+Our axes: AI agents as the primary user, plain standard YAML instead of a proprietary format, and no per-seat pricing. Prices are from the vendors' official pages as of November 2026 (annual billing).
 
-| 製品 | 無料でできること | チーム利用の料金 | 保存形式 |
+| Product | Free tier | Team pricing | Storage format |
 | --- | --- | --- | --- |
-| [Postman](https://www.postman.com/pricing/) | 1ユーザーのみ。チーム作成不可（2026年3月に変更） | Team $19/人・月 | クラウド中心、Collection JSON |
-| [Bruno](https://usebruno.com/pricing) | OSS版。公開Gitプロバイダーとの連携 | Pro $6・Ultimate $11/人・月 | 独自形式 `.bru` |
-| **Ajiro API** | CLI・スキル・テスト実行はすべて無料（MIT） | CLIは無料 | 標準YAML（OpenAPIと相互変換） |
+| [Postman](https://www.postman.com/pricing/) | Single user only; no team creation (changed March 2026) | Team $19/user/month | Cloud-centric, Collection JSON |
+| [Bruno](https://usebruno.com/pricing) | OSS edition; public Git provider integration | Pro $6 / Ultimate $11 per user/month | Proprietary `.bru` |
+| **Ajiro API** | CLI, skill and test runner are free (MIT) | CLI is free | Standard YAML (convertible to/from OpenAPI) |
 
-Postman・Brunoはどちらも優れたツールで、人間がGUIでリクエストを組み立てる用途には向いています。Ajiro APIはその用途では競いません。コードから生成したYAMLをAIが読み書きし、CIで回し続けることに絞っています。移行用に `ajiro-api import postman` と `ajiro-api import bruno` があります。
+Postman and Bruno are good tools for humans building requests in a GUI, and Ajiro API does not compete there. It focuses on YAML generated from code, read and written by AI, and run continuously in CI. `ajiro-api import postman` and `ajiro-api import bruno` help you migrate.
 
-## プライバシー
+## Privacy
 
-- ローカルファースト。API定義やテスト結果をサーバーへ送ることはありません。
-- 利用統計は初期状態でオフです。`ajiro-api telemetry on` で同意した場合のみ、匿名のコマンド実行回数（コマンド名・バージョン・OS）を扱います。パス、URL、API定義は含みません。`DO_NOT_TRACK=1` で常に無効になります。
-- 秘密情報は `.env` 参照（`{{ env.NAME }}`）のみとし、YAMLには書きません。出力ログではトークンやパスワードを `***` で伏せます。
+- Local-first: API definitions and test results are never sent to a server.
+- Usage statistics are off by default. Only if you run `ajiro-api telemetry on` are anonymous command counts (command name, version, OS) kept; no paths, URLs or API definitions. `DO_NOT_TRACK=1` always disables it.
+- Secrets are referenced from `.env` only (`{{ env.NAME }}`), never written in YAML. Tokens and passwords are masked as `***` in output.
 
-## ロードマップ
+## Roadmap
 
-- **Phase 1（現在）**: OSS CLI、Claude Codeスキル、Codex向け手順書、MCPサーバー
-- **Phase 2**: 有料デスクトップGUI（モックの本格版、テスト結果ビューなど）。公開後のKPIを見て着手するかどうかを判断します。日程は約束していません。
-- **Phase 3**: Ajiro（WBS・タスク管理）とのタスク連携
+- **Phase 1 (now)**: OSS CLI, Claude Code skill, Codex instructions, MCP server.
+- **Phase 2**: a paid desktop GUI (full mock server, test result views, ...). Whether to build it is decided after we see usage after launch; no dates are promised.
+- **Phase 3**: task integration with Ajiro (WBS / task management).
 
-CLI、スキル、MCP、インポーターはPhase 2以降もMITで無料です。
+The CLI, skill, MCP server and importers stay MIT and free in Phase 2 and later.
 
-## 開発に参加する
+## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。Issueでは「GUI・モック・仕様書を求める声」のラベルも受け付けています。セキュリティ上の報告は [SECURITY.md](SECURITY.md) に従ってください。変更履歴は [CHANGELOG.md](CHANGELOG.md) です。
+See [CONTRIBUTING.md](CONTRIBUTING.md). We also track "GUI / mock / spec requests" via an issue label. Security reports: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
-## ライセンス
+## License
 
-[MIT](LICENSE) © 2026 NITI
+[MIT](LICENSE) (c) 2026 NITI
