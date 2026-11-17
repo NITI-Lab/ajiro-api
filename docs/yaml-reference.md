@@ -241,8 +241,8 @@ timeout_ms: 10000
 | --- | --- | --- |
 | `version` | （必須） | `1` |
 | `framework` | 自動判定 | `nextjs` `hono` `fastapi` `express` `go-nethttp` `go-chi` `go-echo` |
-| `sources` | `["."]` | スキャン対象のディレクトリ（プロジェクトルートからの相対） |
-| `exclude` | なし | スキャンから除外するパスの部分文字列 |
+| `sources` | `["."]` | スキャン対象のディレクトリ（プロジェクトルートからの相対）。同じメソッド・パスのルートは先頭の `sources` のものを採用。Next.js は `next.config.*` の文字列リテラル `basePath` をパスに反映（アプリごとに `ajiro-api.yaml` を分ける） |
+| `exclude` | なし | スキャンから除外するパスの部分文字列。これとは別に、`.gitignore` に一致するファイルとテストコード（`tests/` `test/` `__tests__/` `test_*.py` `*_test.py` `conftest.py` `*_test.go` `*.test.*` `*.spec.*`）は常に除外 |
 | `api_dir` | `api` | エンドポイントYAMLのディレクトリ |
 | `env_file` | `.env` | 秘密情報を置くdotenvファイル。`{{ env.NAME }}` で参照 |
 | `default_env` | `local` | `--env` を省略したときの環境 |
