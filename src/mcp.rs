@@ -392,7 +392,10 @@ mod tests {
     #[test]
     fn test_tools_list() {
         let mut st = state();
-        let r = call(&mut st, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        );
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(

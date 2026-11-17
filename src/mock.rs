@@ -1071,9 +1071,18 @@ mod tests {
     #[test]
     fn cors_headers_allow_any_origin_and_default_wildcard_headers() {
         let h = cors_headers(&HashMap::new());
-        assert_eq!(cors_value(&h, "Access-Control-Allow-Origin").as_deref(), Some("*"));
-        assert_eq!(cors_value(&h, "Access-Control-Allow-Headers").as_deref(), Some("*"));
-        assert_eq!(cors_value(&h, "Access-Control-Max-Age").as_deref(), Some("86400"));
+        assert_eq!(
+            cors_value(&h, "Access-Control-Allow-Origin").as_deref(),
+            Some("*")
+        );
+        assert_eq!(
+            cors_value(&h, "Access-Control-Allow-Headers").as_deref(),
+            Some("*")
+        );
+        assert_eq!(
+            cors_value(&h, "Access-Control-Max-Age").as_deref(),
+            Some("86400")
+        );
         assert!(cors_value(&h, "Access-Control-Allow-Methods")
             .unwrap()
             .contains("OPTIONS"));
