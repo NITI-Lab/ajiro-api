@@ -57,8 +57,8 @@ impl Project {
     pub fn load(path: &Path) -> Result<Project> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read {}", path.display()))?;
-        let config: ProjectConfig =
-            serde_yaml::from_str(&text).with_context(|| format!("invalid {}", path.display()))?;
+        let config: ProjectConfig = serde_yaml_rust2::from_str(&text)
+            .with_context(|| format!("invalid {}", path.display()))?;
         if config.version != crate::model::SCHEMA_VERSION {
             bail!(
                 "{}: unsupported version {} (this ajiro-api supports {})",

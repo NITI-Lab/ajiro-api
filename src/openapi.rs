@@ -25,7 +25,7 @@ pub fn run_cli(dir: &Path, cmd: &OpenapiCommand) -> Result<i32> {
                 .map(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
                 .unwrap_or(false);
             let text = if yaml {
-                serde_yaml::to_string(&doc)?
+                serde_yaml_rust2::to_string(&doc)?
             } else {
                 serde_json::to_string_pretty(&doc)? + "\n"
             };
@@ -150,7 +150,7 @@ fn read_schema_file(ep: &LoadedEndpoint, r: &SchemaRef) -> Option<Value> {
             let base = ep.path.parent()?;
             let text = std::fs::read_to_string(base.join(p)).ok()?;
             let v: Value = serde_json::from_str(&text)
-                .or_else(|_| serde_yaml::from_str(&text))
+                .or_else(|_| serde_yaml_rust2::from_str(&text))
                 .ok()?;
             // strip `$schema`/`$id` meta keys that are noise inside an OpenAPI document
             match v {
@@ -788,7 +788,7 @@ pub fn parse_document(text: &str) -> Result<Value> {
     if t.starts_with('{') {
         serde_json::from_str(text).context("invalid OpenAPI JSON")
     } else {
-        serde_yaml::from_str(text).context("invalid OpenAPI YAML")
+        serde_yaml_rust2::from_str(text).context("invalid OpenAPI YAML")
     }
 }
 
