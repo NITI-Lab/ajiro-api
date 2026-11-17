@@ -312,6 +312,8 @@ enum ChildRef {
     Name(String),
     Key(String),
     Require(String, Option<String>),
+    /// `ns.router` where `ns` is a namespace import.
+    NsMember(String, String),
 }
 
 struct Mount {
@@ -341,20 +343,387 @@ struct FileGraph {
     insts: IndexMap<String, Inst>,
     regs: Vec<Reg>,
     mounts: Vec<Mount>,
-    /// local name -> (module specifier, imported name or "default")
+    /// local name -> (module specifier, imported name or "default" or "*")
     imports: HashMap<String, (String, String)>,
     default_export: Option<String>,
     named: HashMap<String, String>,
 }
 
-#[derive(Clone)]
-struct Recv {
-    key: String,
-    /// Path of an Express `app.route('/x')` builder.
-    sub: Option<String>,
+type Node2 = (usize, String);
+
+// ------------------------------------------------------- declarations
+
+/// A statically evaluable string expression (paths, prefixes, consts).
+#[derive(Clone, Debug)]
+enum Val {
+    Lit(String),
+    Id(String),
+    Member(String, String),
+    Tmpl(Vec<Val>),
+    Unknown,
 }
 
-type Node2 = (usize, String);
+impl Val {
+    /// `ext` enables template substitutions, `a + b` and `ns.NAME`.
+    fn from(n: Node, src: &str, ext: bool) -> Val {
+        let n = unwrap(n);
+        match n.kind() {
+            "string" => str_lit(n, src).map(Val::Lit).unwrap_or(Val::Unknown),
+            "template_string" => {
+                if let Some(s) = str_lit(n, src) {
+                    return Val::Lit(s);
+                }
+                if !ext {
+                    return Val::Unknown;
+                }
+                let mut parts = Vec::new();
+                let mut c = n.walk();
+                for ch in n.children(&mut c) {
+                    match ch.kind() {
+                        "`" => {}
+                        "template_substitution" => parts.push(
+                            ch.named_child(0)
+                                .map(|x| Val::from(x, src, ext))
+                                .unwrap_or(Val::Unknown),
+                        ),
+                        _ => parts.push(Val::Lit(txt(ch, src).to_string())),
+                    }
+                }
+                Val::Tmpl(parts)
+            }
+            "identifier" => Val::Id(txt(n, src).to_string()),
+            "member_expression" if ext => {
+                match (
+                    n.child_by_field_name("object").map(unwrap),
+                    n.child_by_field_name("property"),
+                ) {
+                    (Some(o), Some(p)) if o.kind() == "identifier" => {
+                        Val::Member(txt(o, src).to_string(), txt(p, src).to_string())
+                    }
+                    _ => Val::Unknown,
+                }
+            }
+            "binary_expression" if ext => {
+                let op = n.child_by_field_name("operator").map(|o| txt(o, src));
+                match (
+                    op,
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    (Some("+"), Some(l), Some(r)) => {
+                        Val::Tmpl(vec![Val::from(l, src, ext), Val::from(r, src, ext)])
+                    }
+                    _ => Val::Unknown,
+                }
+            }
+            _ => Val::Unknown,
+        }
+    }
+}
+
+/// One `createRoute({ method, path })` call.
+#[derive(Clone)]
+struct RouteDef {
+    key: usize,
+    line: u32,
+    method: Val,
+    path: Val,
+}
+
+fn route_def_raw(call: Node, src: &str, ext: bool) -> Option<RouteDef> {
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let f = call.child_by_field_name("function")?;
+    if txt(f, src) != "createRoute" {
+        return None;
+    }
+    let obj = unwrap(call.child_by_field_name("arguments")?.named_child(0)?);
+    Some(RouteDef {
+        key: call.start_byte(),
+        line: line_of(call),
+        method: Val::from(obj_prop(obj, "method", src)?, src, ext),
+        path: Val::from(obj_prop(obj, "path", src)?, src, ext),
+    })
+}
+
+/// `(module, Some([(exported, imported)]))`, or `(module, None)` for `export *`.
+type ReExport = (String, Option<Vec<(String, String)>>);
+
+/// Cross-file facts about one source file (imports, exports, consts, route
+/// definitions). Built in one walk, independent of the framework flavor.
+#[derive(Default)]
+struct FileDecl {
+    rel: String,
+    imports: HashMap<String, (String, String)>,
+    /// exported name -> local name
+    named: HashMap<String, String>,
+    default_local: Option<String>,
+    /// `(module, Some([(exported, imported)]))` or `(module, None)` for `export *`
+    reexports: Vec<ReExport>,
+    consts: HashMap<String, Val>,
+    route_defs: HashMap<String, RouteDef>,
+    all_defs: Vec<RouteDef>,
+    type_aliases: Vec<String>,
+}
+
+fn decl_walk(n: Node, src: &str, ext: bool, d: &mut FileDecl) {
+    match n.kind() {
+        "import_statement" => decl_import(n, src, d),
+        "export_statement" => decl_export(n, src, d),
+        "variable_declarator" => {
+            if let (Some(name), Some(v)) = (
+                n.child_by_field_name("name")
+                    .filter(|x| x.kind() == "identifier"),
+                n.child_by_field_name("value"),
+            ) {
+                let nm = txt(name, src).to_string();
+                let val = Val::from(v, src, ext);
+                if match &val {
+                    Val::Unknown => false,
+                    Val::Lit(_) => true,
+                    _ => ext,
+                } {
+                    d.consts.insert(nm.clone(), val);
+                }
+                if ext {
+                    if let Some(rd) = route_def_raw(unwrap(v), src, ext) {
+                        d.route_defs.insert(nm, rd);
+                    }
+                }
+            }
+        }
+        "call_expression" if ext => {
+            if let Some(rd) = route_def_raw(n, src, ext) {
+                d.all_defs.push(rd);
+            }
+        }
+        "type_alias_declaration" if ext => {
+            if let (Some(name), Some(v)) = (
+                n.child_by_field_name("name"),
+                n.child_by_field_name("value"),
+            ) {
+                if txt(v, src).contains("Hono") {
+                    d.type_aliases.push(txt(name, src).to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut c = n.walk();
+    for ch in n.children(&mut c) {
+        decl_walk(ch, src, ext, d);
+    }
+}
+
+fn decl_import(n: Node, src: &str, d: &mut FileDecl) {
+    let Some(spec) = n
+        .child_by_field_name("source")
+        .and_then(|s| str_lit(s, src))
+    else {
+        return;
+    };
+    let mut c = n.walk();
+    for clause in n.children(&mut c).filter(|x| x.kind() == "import_clause") {
+        let mut c2 = clause.walk();
+        for ch in clause.children(&mut c2) {
+            match ch.kind() {
+                "identifier" => {
+                    d.imports
+                        .insert(txt(ch, src).to_string(), (spec.clone(), "default".into()));
+                }
+                "namespace_import" => {
+                    if let Some(id) = ch.named_child(0) {
+                        d.imports
+                            .insert(txt(id, src).to_string(), (spec.clone(), "*".into()));
+                    }
+                }
+                "named_imports" => {
+                    let mut c3 = ch.walk();
+                    for sp in ch
+                        .named_children(&mut c3)
+                        .filter(|x| x.kind() == "import_specifier")
+                    {
+                        let Some(name) = sp.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let local = sp.child_by_field_name("alias").unwrap_or(name);
+                        d.imports.insert(
+                            txt(local, src).to_string(),
+                            (spec.clone(), txt(name, src).to_string()),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn export_specifiers(n: Node, src: &str) -> Vec<(String, String)> {
+    // (exported, local-or-imported)
+    let mut out = Vec::new();
+    let mut c = n.walk();
+    for clause in n.children(&mut c).filter(|x| x.kind() == "export_clause") {
+        let mut c2 = clause.walk();
+        for sp in clause
+            .named_children(&mut c2)
+            .filter(|x| x.kind() == "export_specifier")
+        {
+            let Some(name) = sp.child_by_field_name("name") else {
+                continue;
+            };
+            let exported = sp.child_by_field_name("alias").unwrap_or(name);
+            out.push((txt(exported, src).to_string(), txt(name, src).to_string()));
+        }
+    }
+    out
+}
+
+fn decl_export(n: Node, src: &str, d: &mut FileDecl) {
+    if let Some(spec) = n
+        .child_by_field_name("source")
+        .and_then(|s| str_lit(s, src))
+    {
+        let specs = export_specifiers(n, src);
+        let mut c = n.walk();
+        let has_clause = n.children(&mut c).any(|x| x.kind() == "export_clause");
+        if has_clause {
+            d.reexports.push((spec, Some(specs)));
+        } else {
+            d.reexports.push((spec, None));
+        }
+        return;
+    }
+    let mut c = n.walk();
+    let is_default = n.children(&mut c).any(|x| x.kind() == "default");
+    if is_default {
+        if let Some(decl) = n.child_by_field_name("declaration") {
+            let name = decl
+                .child_by_field_name("name")
+                .map(|x| txt(x, src).to_string());
+            d.default_local = Some(name.unwrap_or_else(|| "<default>".to_string()));
+        } else if let Some(v) = n.child_by_field_name("value") {
+            let v = unwrap(v);
+            if v.kind() == "identifier" {
+                d.default_local = Some(txt(v, src).to_string());
+            } else if is_function_node(v) {
+                d.default_local = Some("<default>".to_string());
+            }
+        }
+        return;
+    }
+    if let Some(decl) = n.child_by_field_name("declaration") {
+        match decl.kind() {
+            "lexical_declaration" | "variable_declaration" => {
+                let mut c = decl.walk();
+                for x in decl
+                    .named_children(&mut c)
+                    .filter(|x| x.kind() == "variable_declarator")
+                {
+                    if let Some(name) = x
+                        .child_by_field_name("name")
+                        .filter(|x| x.kind() == "identifier")
+                    {
+                        let nm = txt(name, src).to_string();
+                        d.named.insert(nm.clone(), nm);
+                    }
+                }
+            }
+            _ => {
+                if let Some(name) = decl.child_by_field_name("name") {
+                    let nm = txt(name, src).to_string();
+                    d.named.insert(nm.clone(), nm);
+                }
+            }
+        }
+    }
+    for (exported, local) in export_specifiers(n, src) {
+        if exported == "default" {
+            d.default_local = Some(local);
+        } else {
+            d.named.insert(exported, local);
+        }
+    }
+}
+
+/// Top-level function-like declarations: `(local name, function node)`.
+fn top_funcs<'t>(n: Node<'t>, src: &str, out: &mut Vec<(String, Node<'t>)>) {
+    match n.kind() {
+        "function_declaration" | "generator_function_declaration" => {
+            if let Some(name) = n.child_by_field_name("name") {
+                out.push((txt(name, src).to_string(), n));
+            }
+        }
+        "lexical_declaration" | "variable_declaration" => {
+            let mut c = n.walk();
+            for x in n
+                .named_children(&mut c)
+                .filter(|x| x.kind() == "variable_declarator")
+            {
+                if let (Some(name), Some(v)) = (
+                    x.child_by_field_name("name")
+                        .filter(|x| x.kind() == "identifier"),
+                    x.child_by_field_name("value").map(unwrap),
+                ) {
+                    if is_function_node(v) {
+                        out.push((txt(name, src).to_string(), v));
+                    }
+                }
+            }
+        }
+        "export_statement" => {
+            let mut c = n.walk();
+            for ch in n.named_children(&mut c) {
+                if is_function_node(ch) {
+                    out.push(("<default>".to_string(), ch));
+                } else {
+                    top_funcs(ch, src, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_fn_body<'t>(
+    n: Node<'t>,
+    src: &str,
+    returns: &mut Vec<Node<'t>>,
+    locals: &mut HashMap<String, Node<'t>>,
+) {
+    let mut c = n.walk();
+    for ch in n.children(&mut c) {
+        if is_function_node(ch)
+            || matches!(
+                ch.kind(),
+                "function_declaration" | "class_declaration" | "method_definition"
+            )
+        {
+            continue;
+        }
+        match ch.kind() {
+            "return_statement" => {
+                if let Some(e) = ch.named_child(0) {
+                    returns.push(e);
+                }
+            }
+            "variable_declarator" => {
+                if let (Some(name), Some(v)) = (
+                    ch.child_by_field_name("name")
+                        .filter(|x| x.kind() == "identifier"),
+                    ch.child_by_field_name("value"),
+                ) {
+                    locals.insert(txt(name, src).to_string(), v);
+                }
+            }
+            _ => {}
+        }
+        walk_fn_body(ch, src, returns, locals);
+    }
+}
+
+// ----------------------------------------------------------- resolver
 
 const CHAIN_METHODS: [&str; 24] = [
     "get",
@@ -383,14 +752,228 @@ const CHAIN_METHODS: [&str; 24] = [
     "getOpenAPIDocument",
 ];
 
+/// Cross-file lookups over all parsed files: modules, exports (with
+/// re-exports), string consts and factory functions.
+struct Resolver<'a> {
+    decls: &'a [FileDecl],
+    by_rel: &'a HashMap<String, usize>,
+    factories: HashSet<(usize, String)>,
+    /// Hono only: template substitutions, imported consts, factories, route defs.
+    ext: bool,
+    hono_types: Vec<String>,
+}
+
+impl<'a> Resolver<'a> {
+    fn module(&self, fi: usize, spec: &str) -> Option<usize> {
+        resolve_module(&self.decls[fi].rel, spec, self.by_rel)
+    }
+
+    /// Follow `name` exported by file `fi` (through re-exports) to the file
+    /// and local name that declare it.
+    fn export_in(&self, fi: usize, name: &str, depth: u8) -> Option<(usize, String)> {
+        if depth > 6 {
+            return None;
+        }
+        let d = &self.decls[fi];
+        if name == "default" {
+            if let Some(l) = &d.default_local {
+                return Some((fi, l.clone()));
+            }
+        } else if let Some(l) = d.named.get(name) {
+            return Some((fi, l.clone()));
+        }
+        for (spec, items) in &d.reexports {
+            let Some(fk) = self.module(fi, spec) else {
+                continue;
+            };
+            match items {
+                Some(items) => {
+                    if let Some((_, imported)) = items.iter().find(|(e, _)| e == name) {
+                        if let Some(r) = self.export_in(fk, imported, depth + 1) {
+                            return Some(r);
+                        }
+                    }
+                }
+                None if name != "default" => {
+                    if let Some(r) = self.export_in(fk, name, depth + 1) {
+                        return Some(r);
+                    }
+                }
+                None => {}
+            }
+        }
+        None
+    }
+
+    fn resolve_import(&self, fi: usize, spec: &str, imp: &str) -> Option<(usize, String)> {
+        let fj = self.module(fi, spec)?;
+        self.export_in(fj, imp, 0)
+    }
+
+    fn is_factory_callee(&self, fi: usize, name: &str) -> bool {
+        if self.factories.contains(&(fi, name.to_string())) {
+            return true;
+        }
+        self.decls[fi]
+            .imports
+            .get(name)
+            .and_then(|(s, i)| self.resolve_import(fi, s, i))
+            .is_some_and(|k| self.factories.contains(&k))
+    }
+
+    fn eval(&self, v: &Val, fi: usize) -> Option<String> {
+        self.eval_d(v, fi, 0)
+    }
+
+    fn eval_d(&self, v: &Val, fi: usize, d: u8) -> Option<String> {
+        if d > 8 {
+            return None;
+        }
+        match v {
+            Val::Lit(s) => Some(s.clone()),
+            Val::Id(name) => {
+                if let Some(c) = self.decls[fi].consts.get(name) {
+                    return self.eval_d(c, fi, d + 1);
+                }
+                if !self.ext {
+                    return None;
+                }
+                let (spec, imp) = self.decls[fi].imports.get(name)?;
+                let (fj, local) = self.resolve_import(fi, spec, imp)?;
+                let c = self.decls[fj].consts.get(&local)?;
+                self.eval_d(c, fj, d + 1)
+            }
+            Val::Member(ns, prop) => {
+                let (spec, imp) = self.decls[fi].imports.get(ns)?;
+                if imp != "*" {
+                    return None;
+                }
+                let fj = self.module(fi, spec)?;
+                let (fk, local) = self.export_in(fj, prop, 0)?;
+                let c = self.decls[fk].consts.get(&local)?;
+                self.eval_d(c, fk, d + 1)
+            }
+            Val::Tmpl(parts) => {
+                let mut s = String::new();
+                for p in parts {
+                    s.push_str(&self.eval_d(p, fi, d + 1)?);
+                }
+                Some(s)
+            }
+            Val::Unknown => None,
+        }
+    }
+
+    /// Whether `e` evaluates to a Hono instance (`new Hono()`, a factory
+    /// call, or a local variable holding one), looking through chains.
+    fn is_hono_expr<'t>(
+        &self,
+        e: Node<'t>,
+        fi: usize,
+        src: &str,
+        locals: &HashMap<String, Node<'t>>,
+        depth: u8,
+    ) -> bool {
+        if depth > 6 {
+            return false;
+        }
+        let mut n = unwrap(e);
+        loop {
+            match n.kind() {
+                "new_expression" => {
+                    return n
+                        .child_by_field_name("constructor")
+                        .is_some_and(|c| txt(c, src).ends_with("Hono"));
+                }
+                "call_expression" => {
+                    let Some(f) = n.child_by_field_name("function").map(unwrap) else {
+                        return false;
+                    };
+                    match f.kind() {
+                        "member_expression" => {
+                            let prop = f
+                                .child_by_field_name("property")
+                                .map(|p| txt(p, src))
+                                .unwrap_or("");
+                            let Some(o) = f.child_by_field_name("object") else {
+                                return false;
+                            };
+                            if !CHAIN_METHODS.contains(&prop) {
+                                return false;
+                            }
+                            n = unwrap(o);
+                        }
+                        "identifier" => return self.is_factory_callee(fi, txt(f, src)),
+                        _ => return false,
+                    }
+                }
+                "identifier" => {
+                    return match locals.get(txt(n, src)) {
+                        Some(v) => self.is_hono_expr(*v, fi, src, locals, depth + 1),
+                        None => false,
+                    };
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    fn func_returns_hono(&self, f: Node, fi: usize, src: &str) -> bool {
+        if f.child_by_field_name("return_type")
+            .is_some_and(|t| txt(t, src).contains("Hono"))
+        {
+            return true;
+        }
+        let Some(body) = f.child_by_field_name("body") else {
+            return false;
+        };
+        let mut returns = Vec::new();
+        let mut locals = HashMap::new();
+        if body.kind() == "statement_block" {
+            walk_fn_body(body, src, &mut returns, &mut locals);
+        } else {
+            returns.push(body);
+        }
+        returns
+            .into_iter()
+            .any(|r| self.is_hono_expr(r, fi, src, &locals, 0))
+    }
+}
+
+/// Calls to factory functions below `n` (keyed by byte range).
+fn factory_calls(n: Node, src: &str, res: &Resolver, fi: usize, out: &mut HashSet<(usize, usize)>) {
+    if n.kind() == "call_expression" {
+        if let Some(f) = n.child_by_field_name("function").map(unwrap) {
+            if f.kind() == "identifier" && res.is_factory_callee(fi, txt(f, src)) {
+                out.insert((n.start_byte(), n.end_byte()));
+            }
+        }
+    }
+    let mut c = n.walk();
+    for ch in n.children(&mut c) {
+        factory_calls(ch, src, res, fi, out);
+    }
+}
+
+// ------------------------------------------------------------- builder
+
 struct Builder<'a> {
     src: &'a str,
     flavor: Flavor,
+    fi: usize,
+    res: &'a Resolver<'a>,
     g: FileGraph,
-    consts: HashMap<String, String>,
-    route_defs: HashMap<String, (String, String)>,
+    fcalls: HashSet<(usize, usize)>,
     creations: HashMap<usize, String>,
     derived: HashMap<usize, String>,
+    /// `const routes = [a, b]`: names of the identifiers in the array.
+    arrays: HashMap<String, Vec<String>>,
+    /// Loop variables bound to the elements of a known array.
+    loop_vars: HashMap<String, Vec<String>>,
+    /// createRoute() definitions consumed by `.openapi()`: (file, key).
+    used: HashSet<(usize, usize)>,
+    /// Lines of `.openapi()` calls whose route reference was not resolvable.
+    unresolved: Vec<u32>,
     warnings: Vec<String>,
 }
 
@@ -405,14 +988,8 @@ impl<'a> Builder<'a> {
     }
 
     fn str_of(&self, n: Node<'a>) -> Option<String> {
-        let u = unwrap(n);
-        if let Some(s) = str_lit(u, self.src) {
-            return Some(s);
-        }
-        if u.kind() == "identifier" {
-            return self.consts.get(self.t(u)).cloned();
-        }
-        None
+        let v = Val::from(n, self.src, self.res.ext);
+        self.res.eval(&v, self.fi)
     }
 
     fn args(&self, call: Node<'a>) -> Vec<Node<'a>> {
@@ -433,6 +1010,9 @@ impl<'a> Builder<'a> {
                 .child_by_field_name("constructor")
                 .map(|c| self.t(c).ends_with("Hono"))
                 .unwrap_or(false),
+            (Flavor::Hono, "call_expression") => {
+                self.fcalls.contains(&(n.start_byte(), n.end_byte()))
+            }
             (Flavor::Express, "call_expression") => n
                 .child_by_field_name("function")
                 .map(|f| match f.kind() {
@@ -515,20 +1095,36 @@ impl<'a> Builder<'a> {
         Some((spec, member))
     }
 
-    fn route_def_of(&self, n: Node<'a>) -> Option<(String, String)> {
+    /// Resolve a route reference (`createRoute(...)`, a variable, a named
+    /// import or `ns.name`) to its definition and defining file.
+    fn route_def_ref(&self, n: Node<'a>) -> Option<(usize, RouteDef)> {
         let u = unwrap(n);
+        let decls = self.res.decls;
         match u.kind() {
-            "identifier" => self.route_defs.get(self.t(u)).cloned(),
-            "call_expression" => {
-                let f = u.child_by_field_name("function")?;
-                if self.t(f) != "createRoute" {
+            "identifier" => {
+                let name = self.t(u);
+                if let Some(d) = decls[self.fi].route_defs.get(name) {
+                    return Some((self.fi, d.clone()));
+                }
+                let (spec, imp) = self.g.imports.get(name)?;
+                let (fj, local) = self.res.resolve_import(self.fi, spec, imp)?;
+                decls[fj].route_defs.get(&local).map(|d| (fj, d.clone()))
+            }
+            "member_expression" => {
+                let obj = unwrap(u.child_by_field_name("object")?);
+                let prop = self.t(u.child_by_field_name("property")?);
+                if obj.kind() != "identifier" {
                     return None;
                 }
-                let obj = u.child_by_field_name("arguments")?.named_child(0)?;
-                let method = self.str_of(obj_prop(obj, "method", self.src)?)?;
-                let path = self.str_of(obj_prop(obj, "path", self.src)?)?;
-                Some((method.to_ascii_uppercase(), path))
+                let (spec, imp) = self.g.imports.get(self.t(obj))?;
+                if imp != "*" {
+                    return None;
+                }
+                let fj = self.res.module(self.fi, spec)?;
+                let (fk, local) = self.res.export_in(fj, prop, 0)?;
+                decls[fk].route_defs.get(&local).map(|d| (fk, d.clone()))
             }
+            "call_expression" => route_def_raw(u, self.src, self.res.ext).map(|d| (self.fi, d)),
             _ => None,
         }
     }
@@ -566,6 +1162,13 @@ impl<'a> Builder<'a> {
                         self.g
                             .imports
                             .insert(self.t(ch).to_string(), (spec.clone(), "default".into()));
+                    }
+                    "namespace_import" => {
+                        if let Some(id) = ch.named_child(0) {
+                            self.g
+                                .imports
+                                .insert(self.t(id).to_string(), (spec.clone(), "*".into()));
+                        }
                     }
                     "named_imports" => {
                         let mut c3 = ch.walk();
@@ -675,17 +1278,23 @@ impl<'a> Builder<'a> {
             return;
         }
         let nm = self.t(name).to_string();
-        if let Some(s) = str_lit(v, self.src) {
-            self.consts.insert(nm.clone(), s);
-        }
-        if let Some(rd) = self.route_def_of(v) {
-            self.route_defs.insert(nm.clone(), rd);
-        }
         if let Some((spec, imported)) = self.require_of(v) {
             self.g.imports.insert(
                 nm.clone(),
                 (spec, imported.unwrap_or_else(|| "default".into())),
             );
+        }
+        let u = unwrap(v);
+        if u.kind() == "array" {
+            let mut c = u.walk();
+            let names: Vec<String> = u
+                .named_children(&mut c)
+                .map(unwrap)
+                .filter(|e| e.kind() == "identifier")
+                .map(|e| self.t(e).to_string())
+                .collect();
+            self.arrays.insert(nm.clone(), names);
+            return;
         }
         if let Some(base) = self.chain_base(v) {
             if self.is_creation(base) {
@@ -695,7 +1304,6 @@ impl<'a> Builder<'a> {
             }
         }
         // `const v1 = app.basePath('/v1')`
-        let u = unwrap(v);
         if u.kind() == "call_expression" {
             if let Some(f) = u
                 .child_by_field_name("function")
@@ -784,7 +1392,9 @@ impl<'a> Builder<'a> {
         }
         let ty = self.t(ty);
         let hit = match self.flavor {
-            Flavor::Hono => ty.contains("Hono"),
+            Flavor::Hono => {
+                ty.contains("Hono") || self.res.hono_types.iter().any(|a| ty.contains(a.as_str()))
+            }
             Flavor::Express => {
                 ty.contains("Express") || ty.contains("Router") || ty.contains("Application")
             }
@@ -869,13 +1479,87 @@ impl<'a> Builder<'a> {
     }
 
     fn visit(&mut self, n: Node<'a>) {
-        if n.kind() == "call_expression" {
-            self.call(n);
+        let mut bound: Option<String> = None;
+        match n.kind() {
+            "call_expression" => {
+                self.call(n);
+                bound = self.bind_for_each(n);
+            }
+            "for_in_statement" => bound = self.bind_for_of(n),
+            _ => {}
         }
         let mut c = n.walk();
         for ch in n.children(&mut c) {
             self.visit(ch);
         }
+        if let Some(b) = bound {
+            self.loop_vars.remove(&b);
+        }
+    }
+
+    fn array_names(&self, n: Node<'a>) -> Option<Vec<String>> {
+        let u = unwrap(n);
+        match u.kind() {
+            "identifier" => self.arrays.get(self.t(u)).cloned(),
+            "array" => {
+                let mut c = u.walk();
+                Some(
+                    u.named_children(&mut c)
+                        .map(unwrap)
+                        .filter(|e| e.kind() == "identifier")
+                        .map(|e| self.t(e).to_string())
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    /// `routes.forEach((route) => ...)` over a known array: bind `route`.
+    fn bind_for_each(&mut self, n: Node<'a>) -> Option<String> {
+        let f = unwrap(n.child_by_field_name("function")?);
+        if f.kind() != "member_expression"
+            || self.t(f.child_by_field_name("property")?) != "forEach"
+        {
+            return None;
+        }
+        let names = self.array_names(f.child_by_field_name("object")?)?;
+        let cb = unwrap(*self.args(n).first()?);
+        if !is_function_node(cb) {
+            return None;
+        }
+        let p = if let Some(p) = cb.child_by_field_name("parameter") {
+            p
+        } else {
+            let first = cb.child_by_field_name("parameters")?.named_child(0)?;
+            match first.kind() {
+                "required_parameter" | "optional_parameter" => {
+                    first.child_by_field_name("pattern")?
+                }
+                _ => first,
+            }
+        };
+        if p.kind() != "identifier" {
+            return None;
+        }
+        let nm = self.t(p).to_string();
+        self.loop_vars.insert(nm.clone(), names);
+        Some(nm)
+    }
+
+    /// `for (const route of routes) ...` over a known array.
+    fn bind_for_of(&mut self, n: Node<'a>) -> Option<String> {
+        if self.t(n.child_by_field_name("operator")?) != "of" {
+            return None;
+        }
+        let left = n.child_by_field_name("left")?;
+        if left.kind() != "identifier" {
+            return None;
+        }
+        let names = self.array_names(n.child_by_field_name("right")?)?;
+        let nm = self.t(left).to_string();
+        self.loop_vars.insert(nm.clone(), names);
+        Some(nm)
     }
 
     fn path_list(&self, n: Node<'a>) -> Option<Vec<String>> {
@@ -902,14 +1586,29 @@ impl<'a> Builder<'a> {
                 self.resolve_receiver(u).map(|r| ChildRef::Key(r.key))
             }
             "member_expression" => {
-                let (spec, _) = self.require_of(u)?;
-                let imp = u
-                    .child_by_field_name("property")
-                    .map(|p| self.t(p).to_string());
-                Some(ChildRef::Require(spec, imp))
+                if let Some((spec, _)) = self.require_of(u) {
+                    let imp = u
+                        .child_by_field_name("property")
+                        .map(|p| self.t(p).to_string());
+                    return Some(ChildRef::Require(spec, imp));
+                }
+                let obj = unwrap(u.child_by_field_name("object")?);
+                let prop = self.t(u.child_by_field_name("property")?).to_string();
+                (obj.kind() == "identifier" && self.flavor == Flavor::Hono)
+                    .then(|| ChildRef::NsMember(self.t(obj).to_string(), prop))
             }
             _ => None,
         }
+    }
+
+    fn child_refs(&mut self, a: Node<'a>) -> Vec<ChildRef> {
+        let u = unwrap(a);
+        if u.kind() == "identifier" {
+            if let Some(names) = self.loop_vars.get(self.t(u)) {
+                return names.iter().cloned().map(ChildRef::Name).collect();
+            }
+        }
+        self.child_ref(a).into_iter().collect()
     }
 
     fn call(&mut self, n: Node<'a>) {
@@ -939,19 +1638,60 @@ impl<'a> Builder<'a> {
                 let Some(recv) = self.resolve_receiver(obj) else {
                     return;
                 };
-                let Some((method, path)) = args.first().and_then(|a| self.route_def_of(*a)) else {
+                let Some(first) = args.first() else { return };
+                let Some((fj, def)) = self.route_def_ref(*first) else {
+                    if self.flavor == Flavor::Hono {
+                        self.unresolved.push(line);
+                    }
                     return;
                 };
-                let handler = args
-                    .get(1)
-                    .filter(|a| a.kind() == "identifier")
+                self.used.insert((fj, def.key));
+                let (method, path) = (self.res.eval(&def.method, fj), self.res.eval(&def.path, fj));
+                let (Some(method), Some(path)) = (method, path) else {
+                    self.warn(
+                        line,
+                        "createRoute() method or path is not statically known; skipped",
+                    );
+                    return;
+                };
+                let method = method.to_ascii_uppercase();
+                if !HTTP_METHODS.contains(&method.as_str()) {
+                    return;
+                }
+                let h = args.get(1);
+                let handler = h
+                    .filter(|a| matches!(a.kind(), "identifier" | "member_expression"))
                     .map(|a| self.t(*a).to_string());
+                let mut query = Vec::new();
+                if let Some(h) =
+                    h.filter(|a| !matches!(a.kind(), "identifier" | "member_expression"))
+                {
+                    collect_query(*h, self.src, &mut query);
+                    dedup(&mut query);
+                }
                 self.g.regs.push(Reg {
                     inst: recv.key,
                     method,
                     path,
                     line,
                     handler,
+                    query,
+                });
+            }
+            "doc" | "doc31" if self.flavor == Flavor::Hono => {
+                let Some(recv) = self.resolve_receiver(obj) else {
+                    return;
+                };
+                let Some(path) = args.first().and_then(|a| self.str_of(*a)) else {
+                    self.warn(line, "route path is not statically known; skipped");
+                    return;
+                };
+                self.g.regs.push(Reg {
+                    inst: recv.key,
+                    method: "GET".to_string(),
+                    path,
+                    line,
+                    handler: None,
                     query: vec![],
                 });
             }
@@ -966,10 +1706,10 @@ impl<'a> Builder<'a> {
                     );
                     return;
                 };
-                if let Some(child) = self.child_ref(args[1]) {
+                for child in self.child_refs(args[1]) {
                     self.g.mounts.push(Mount {
-                        parent: recv.key,
-                        prefix,
+                        parent: recv.key.clone(),
+                        prefix: prefix.clone(),
                         child,
                         line,
                     });
@@ -1078,6 +1818,13 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Receiver of a chain: instance key plus an Express `app.route('/x')` path.
+#[derive(Clone)]
+struct Recv {
+    key: String,
+    sub: Option<String>,
+}
+
 fn clean_path(raw: &str, flavor: Flavor) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     if flavor == Flavor::Express {
@@ -1088,69 +1835,268 @@ fn clean_path(raw: &str, flavor: Flavor) -> String {
     raw.to_string()
 }
 
+struct Entry {
+    path: std::path::PathBuf,
+    rel: String,
+    src: Option<String>,
+    strong: bool,
+}
+
+/// Names and module stems that identify calls of the known factories in
+/// files that do not mention Hono themselves.
+fn factory_needles(factories: &HashSet<(usize, String)>, entries: &[Entry]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for (fi, name) in factories {
+        if name != "<default>" && name.len() >= 4 {
+            out.insert(name.clone());
+        }
+        let p = Path::new(&entries[*fi].rel);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let stem = if stem == "index" {
+            p.parent()
+                .and_then(|d| d.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+        } else {
+            stem
+        };
+        if stem.len() >= 4 {
+            out.insert(stem.to_string());
+        }
+    }
+    out
+}
+
 /// Scan Hono / Express sources. Returns routes and warnings.
 pub fn scan_graphs(
     flavor: Flavor,
     root: &Path,
     files: &[std::path::PathBuf],
 ) -> Result<(Vec<Route>, Vec<String>)> {
-    let needle = match flavor {
-        Flavor::Hono => "hono",
-        Flavor::Express => "express",
-    };
+    let hono = flavor == Flavor::Hono;
     let mut parsers = Parsers::new()?;
-    let mut graphs: Vec<FileGraph> = Vec::new();
     let mut warnings = Vec::new();
+
+    // Read everything once. Express keeps only files that mention it; Hono
+    // keeps all (factories can live behind any name).
+    let mut entries: Vec<Entry> = Vec::new();
     for f in files.iter().filter(|f| is_ts_source(f)) {
         let Ok(src) = std::fs::read_to_string(f) else {
             continue;
         };
-        if !src.to_ascii_lowercase().contains(needle) {
-            continue;
+        let lower = src.to_ascii_lowercase();
+        let strong = if hono {
+            ["hono", "openapi", "createroute"]
+                .iter()
+                .any(|k| lower.contains(k))
+        } else {
+            lower.contains("express")
+        };
+        entries.push(Entry {
+            path: f.clone(),
+            rel: rel_path(root, f),
+            src: (strong || hono).then_some(src),
+            strong,
+        });
+    }
+    let n = entries.len();
+    let by_rel: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.rel.clone(), i))
+        .collect();
+    let mut decls: Vec<FileDecl> = entries
+        .iter()
+        .map(|e| FileDecl {
+            rel: e.rel.clone(),
+            ..Default::default()
+        })
+        .collect();
+    let mut trees: Vec<Option<Tree>> = (0..n).map(|_| None).collect();
+    let mut relevant: Vec<bool> = entries.iter().map(|e| e.strong).collect();
+    let mut decl_done: Vec<bool> = vec![false; n];
+    let mut factories: HashSet<(usize, String)> = HashSet::new();
+
+    // Declarations (imports, exports, consts, route definitions) come from
+    // one parse of every file. Trees are kept for relevant files only; for
+    // Hono that set grows with files that call known factories until nothing
+    // changes (such a file is parsed a second time, once).
+    loop {
+        for i in 0..n {
+            let need_decl = !decl_done[i];
+            let need_tree = relevant[i] && trees[i].is_none();
+            if !need_decl && !need_tree {
+                continue;
+            }
+            decl_done[i] = true;
+            let Some(src) = entries[i].src.as_ref() else {
+                continue;
+            };
+            let Some(tree) = parsers.parse(&entries[i].path, src) else {
+                continue;
+            };
+            if need_decl {
+                let mut d = FileDecl {
+                    rel: entries[i].rel.clone(),
+                    ..Default::default()
+                };
+                decl_walk(tree.root_node(), src, hono, &mut d);
+                decls[i] = d;
+            }
+            // Trees are kept only for files that can hold routes or factories.
+            if relevant[i] {
+                trees[i] = Some(tree);
+            }
         }
-        let Some(tree) = parsers.parse(f, &src) else {
+        if !hono {
+            break;
+        }
+        loop {
+            let res = Resolver {
+                decls: &decls,
+                by_rel: &by_rel,
+                factories: std::mem::take(&mut factories),
+                ext: true,
+                hono_types: vec![],
+            };
+            let mut new = Vec::new();
+            for (fi, tree) in trees.iter().enumerate() {
+                let (Some(tree), Some(src)) = (tree, entries[fi].src.as_ref()) else {
+                    continue;
+                };
+                let mut funcs = Vec::new();
+                let mut c = tree.root_node().walk();
+                for top in tree.root_node().named_children(&mut c) {
+                    top_funcs(top, src, &mut funcs);
+                }
+                for (name, f) in funcs {
+                    if !res.factories.contains(&(fi, name.clone()))
+                        && res.func_returns_hono(f, fi, src)
+                    {
+                        new.push((fi, name));
+                    }
+                }
+            }
+            factories = res.factories;
+            if new.is_empty() {
+                break;
+            }
+            factories.extend(new);
+        }
+        let needles = factory_needles(&factories, &entries);
+        let mut changed = false;
+        if !needles.is_empty() {
+            for i in 0..n {
+                if relevant[i] {
+                    continue;
+                }
+                if let Some(s) = &entries[i].src {
+                    if needles.iter().any(|nd| s.contains(nd.as_str())) {
+                        relevant[i] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let hono_types: Vec<String> = decls
+        .iter()
+        .flat_map(|d| d.type_aliases.iter().cloned())
+        .collect();
+    let res = Resolver {
+        decls: &decls,
+        by_rel: &by_rel,
+        factories,
+        ext: hono,
+        hono_types,
+    };
+
+    let mut graphs: Vec<FileGraph> = Vec::new();
+    let mut used: HashSet<(usize, usize)> = HashSet::new();
+    for (i, e) in entries.iter().enumerate() {
+        let (Some(src), Some(tree)) = (e.src.as_ref(), trees[i].as_ref()) else {
+            graphs.push(FileGraph {
+                rel: e.rel.clone(),
+                ..Default::default()
+            });
             continue;
         };
+        let mut fcalls = HashSet::new();
+        if hono && !res.factories.is_empty() {
+            factory_calls(tree.root_node(), src, &res, i, &mut fcalls);
+        }
         let mut b = Builder {
-            src: &src,
+            src,
             flavor,
+            fi: i,
+            res: &res,
             g: FileGraph {
-                rel: rel_path(root, f),
+                rel: e.rel.clone(),
                 ..Default::default()
             },
-            consts: HashMap::new(),
-            route_defs: HashMap::new(),
+            fcalls,
             creations: HashMap::new(),
             derived: HashMap::new(),
+            arrays: HashMap::new(),
+            loop_vars: HashMap::new(),
+            used: HashSet::new(),
+            unresolved: vec![],
             warnings: vec![],
         };
         b.collect(tree.root_node());
         b.visit(tree.root_node());
+        if let Some(first) = b.unresolved.first().copied() {
+            let cnt = b.unresolved.len();
+            b.warn(
+                first,
+                &format!(
+                    "{} `.openapi()` route reference(s) could not be resolved (first here)",
+                    cnt
+                ),
+            );
+        }
         warnings.extend(b.warnings);
+        used.extend(b.used);
         graphs.push(b.g);
     }
-    let by_rel: HashMap<String, usize> = graphs
-        .iter()
-        .enumerate()
-        .map(|(i, g)| (g.rel.clone(), i))
-        .collect();
 
     let resolve_import = |gi: usize, spec: &str, imp: &str| -> Option<(usize, String)> {
         let fi = resolve_module(&graphs[gi].rel, spec, &by_rel)?;
-        let g = &graphs[fi];
-        let key = if imp == "default" {
-            g.default_export
-                .clone()
-                .filter(|k| g.insts.contains_key(k))
-                .or_else(|| (g.insts.len() == 1).then(|| g.insts.keys().next().unwrap().clone()))
-        } else {
-            g.named
-                .get(imp)
-                .cloned()
-                .filter(|k| g.insts.contains_key(k))
-                .or_else(|| g.insts.contains_key(imp).then(|| imp.to_string()))
-        }?;
-        Some((fi, key))
+        let mut cur = (fi, imp.to_string());
+        for _ in 0..7 {
+            let g = &graphs[cur.0];
+            let key = if cur.1 == "default" {
+                g.default_export
+                    .clone()
+                    .filter(|k| g.insts.contains_key(k))
+                    .or_else(|| {
+                        (g.insts.len() == 1).then(|| g.insts.keys().next().unwrap().clone())
+                    })
+            } else {
+                g.named
+                    .get(&cur.1)
+                    .cloned()
+                    .filter(|k| g.insts.contains_key(k))
+                    .or_else(|| g.insts.contains_key(&cur.1).then(|| cur.1.clone()))
+            };
+            if let Some(k) = key {
+                return Some((cur.0, k));
+            }
+            if !hono {
+                return None;
+            }
+            // Follow re-exports to the declaring file.
+            let next = res.export_in(cur.0, &cur.1, 0)?;
+            if next == cur {
+                return None;
+            }
+            cur = next;
+        }
+        None
     };
 
     let mut children: HashMap<Node2, Vec<(String, Node2)>> = HashMap::new();
@@ -1165,7 +2111,7 @@ pub fn scan_graphs(
                     } else if let Some((spec, imp)) = g.imports.get(n) {
                         let r = resolve_import(gi, spec, imp);
                         if r.is_none()
-                            && flavor == Flavor::Hono
+                            && hono
                             && (spec.starts_with("./") || spec.starts_with("../"))
                         {
                             warnings.push(format!(
@@ -1181,6 +2127,10 @@ pub fn scan_graphs(
                 ChildRef::Require(spec, imp) => {
                     resolve_import(gi, spec, imp.as_deref().unwrap_or("default"))
                 }
+                ChildRef::NsMember(ns, prop) => match g.imports.get(ns) {
+                    Some((spec, imp)) if imp == "*" => resolve_import(gi, spec, prop),
+                    _ => None,
+                },
             };
             if let Some(t) = target {
                 if t.0 == gi && t.1 == m.parent {
@@ -1253,6 +2203,44 @@ pub fn scan_graphs(
                     &mut out,
                 );
             }
+        }
+    }
+
+    // Fallback: createRoute() definitions never consumed by `.openapi()`
+    // are still emitted, with the path as written.
+    if hono {
+        let mut emitted = 0usize;
+        for (fi, d) in decls.iter().enumerate() {
+            for def in &d.all_defs {
+                if used.contains(&(fi, def.key)) {
+                    continue;
+                }
+                let method = res.eval(&def.method, fi).map(|m| m.to_ascii_uppercase());
+                match (method, res.eval(&def.path, fi)) {
+                    (Some(m), Some(p)) if HTTP_METHODS.contains(&m.as_str()) => {
+                        out.push(Route {
+                            method: m,
+                            path: naming::normalize_path(&p),
+                            file: d.rel.clone(),
+                            line: def.line,
+                            handler: None,
+                            query_params: vec![],
+                            framework: flavor.name().to_string(),
+                        });
+                        emitted += 1;
+                    }
+                    _ => warnings.push(format!(
+                        "{}:{}: createRoute() method or path is not statically known; skipped",
+                        d.rel, def.line
+                    )),
+                }
+            }
+        }
+        if emitted > 0 {
+            warnings.push(format!(
+                "{} createRoute() definition(s) are not connected to any app through `.openapi()`; emitted with the path as written (no mount prefixes)",
+                emitted
+            ));
         }
     }
     Ok((out, warnings))

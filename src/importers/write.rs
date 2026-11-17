@@ -96,20 +96,12 @@ pub fn write_endpoints(
         }
         def.id = naming::unique_id(&def.id, &taken);
         taken.insert(def.id.clone());
-        let path = api_dir.join(naming::endpoint_rel_path(
+        // Different paths can map to the same file name
+        // (`/a/b-c` and `/a/b/c` -> `post-a-b-c.yaml`): add `-2`, `-3`, ...
+        let path = unique_file(api_dir.join(naming::endpoint_rel_path(
             &def.request.method,
             &def.request.path,
-        ));
-        if path.exists() {
-            report.skipped.push(project.rel(&path));
-            report.warnings.push(format!(
-                "{} already exists with a different endpoint; {} {} was not imported",
-                project.rel(&path),
-                def.request.method,
-                def.request.path
-            ));
-            continue;
-        }
+        )));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("cannot create {}", parent.display()))?;
@@ -119,6 +111,25 @@ pub fn write_endpoints(
         report.created.push(project.rel(&path));
     }
     Ok(())
+}
+
+/// `path` if it does not exist yet, else `<stem>-2.yaml`, `<stem>-3.yaml`, ...
+fn unique_file(path: std::path::PathBuf) -> std::path::PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "yaml".into());
+    (2..)
+        .map(|n| path.with_file_name(format!("{}-{}.{}", stem, n, ext)))
+        .find(|p| !p.exists())
+        .expect("unbounded range")
 }
 
 /// Print the report as JSON or as a short human summary.

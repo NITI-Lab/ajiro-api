@@ -2,8 +2,8 @@
 //! `.on()`, `.route()` mounts (across files), `.basePath()` and
 //! `app.openapi(createRoute({...}))`.
 //!
-//! `.all()` is emitted as a single GET route (with a warning). Apps
-//! registered through helper factories (`createFactory`) are not detected.
+//! `.all()` is emitted as a single GET route (with a warning). Factory functions
+//! returning an instance, `createRoute()` objects across files and `.openapi()` chains are resolved (see `ts_common`).
 
 use super::ts_common::{scan_graphs, Flavor};
 use super::Route;

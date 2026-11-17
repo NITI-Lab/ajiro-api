@@ -58,7 +58,7 @@ mock: {}
 | `method` | 文字列 | はい | 大文字のHTTPメソッド（`GET` `POST` `PUT` `PATCH` `DELETE` `HEAD` `OPTIONS`） |
 | `path` | 文字列 | はい | `/` で始まるOpenAPI形式のパス。パラメータは `{id}` |
 | `params` | マップ | いいえ | `path` の `{param}` に入れる値 |
-| `query` | マップ | いいえ | クエリ文字列 |
+| `query` | マップ | いいえ | クエリ文字列。値が `null` のキーは送信しません（`scan`・`openapi import` が、存在は分かるが値が不明なパラメータを `null` で書き出します） |
 | `headers` | マップ（文字列） | いいえ | リクエストヘッダー。秘密情報は書かず `{{ env.NAME }}` を使う |
 | `body` | 任意のYAML値 | いいえ | リクエストボディ。オブジェクトや配列はJSONで送られる |
 
