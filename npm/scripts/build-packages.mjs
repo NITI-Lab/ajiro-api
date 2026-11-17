@@ -100,7 +100,7 @@ function main() {
     cpSync(join(root, "LICENSE"), join(pkgDir, "LICENSE"));
     writeFileSync(
       join(pkgDir, "README.md"),
-      `# ${name}\n\nNative ajiro-api binary for ${t.platform}/${t.arch}. Do not install directly; use \`npx ajiro-api\`.\n\nhttps://github.com/niti-lab/ajiro-api\n`
+      `# ${name}\n\nNative [ajiro-api](https://www.npmjs.com/package/ajiro-api) binary for ${t.platform}/${t.arch}. Do not install it directly: install or run \`ajiro-api\` (for example \`npx -y ajiro-api\`), which pulls in the right platform package.\n\najiro-api lets Claude Code and Codex test the APIs they write. Documentation: https://github.com/niti-lab/ajiro-api\n`
     );
     writeFileSync(
       join(pkgDir, "package.json"),
@@ -108,9 +108,11 @@ function main() {
         {
           name,
           version,
-          description: `ajiro-api native binary for ${t.platform}/${t.arch}`,
+          description: `ajiro-api native binary for ${t.platform}/${t.arch} (installed automatically by the ajiro-api package)`,
+          keywords: ["ajiro-api", "api-testing", "claude-code", "mcp"],
+          author: { name: "NITI", url: "https://nititech.jp/" },
           license: "MIT",
-          homepage: "https://github.com/niti-lab/ajiro-api",
+          homepage: "https://nititech.jp/",
           repository: { type: "git", url: "git+https://github.com/niti-lab/ajiro-api.git" },
           os: t.os,
           cpu: t.cpu,

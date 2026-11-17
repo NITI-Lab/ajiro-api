@@ -2,10 +2,15 @@
   "name": "ajiro-api",
   "mcpName": "io.github.NITI-Lab/ajiro-api",
   "version": "0.2.1",
-  "description": "API definitions, regression tests and mocks for AI coding agents. Scans backend routes into YAML.",
-  "keywords": ["api", "testing", "openapi", "claude-code", "codex", "mcp", "cli"],
+  "description": "Let Claude Code and Codex test the APIs they write: scan Next.js, Hono, FastAPI, Express and Go routes into one YAML file per endpoint, run them as regression tests, serve them as mocks.",
+  "keywords": [
+    "api", "api-testing", "regression-testing", "testing", "e2e", "mock-server", "mock", "openapi",
+    "claude-code", "claude", "codex", "mcp", "mcp-server", "ai-agents", "coding-agent", "llm",
+    "nextjs", "hono", "fastapi", "express", "golang", "yaml", "cli"
+  ],
+  "author": { "name": "NITI", "url": "https://nititech.jp/" },
   "license": "MIT",
-  "homepage": "https://github.com/niti-lab/ajiro-api",
+  "homepage": "https://nititech.jp/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/niti-lab/ajiro-api.git",
