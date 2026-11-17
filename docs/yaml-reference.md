@@ -48,7 +48,7 @@ mock: {}
 | `depends_on` | 文字列の配列 | いいえ | 先に実行するエンドポイントの `id`。存在しない `id` は `validate` がエラーにする |
 | `request` | オブジェクト | はい | 基本のリクエスト |
 | `source` | オブジェクト | いいえ | `scan` が書く。**手で編集しない** |
-| `tests` | 配列 | いいえ | テストケース。人とAIが書く。`scan` は触らない。空なら暗黙の `smoke` テスト（ステータス500未満）を実行 |
+| `tests` | 配列 | いいえ | テストケース。人とAIが書く。`scan` は触らない。空なら暗黙の `smoke` テスト（ステータス500未満）を実行。ただし `smoke` を送るのは GET・HEAD・OPTIONS だけで、POST・PUT・PATCH・DELETE はデータを変えうるので送らずにスキップする（`test --smoke-unsafe` で送る） |
 | `mock` | オブジェクト | いいえ | `ajiro-api mock` が返すサンプルレスポンス |
 
 ### `request`
@@ -162,6 +162,7 @@ expect:
 | --- | --- |
 | `$.jsonpath` | JSONレスポンスのJSONPathの値（例: `$.token`） |
 | `header:Name` | レスポンスヘッダー（例: `header:Location`） |
+| `cookie:name` | `Set-Cookie` ヘッダーのCookieの値（例: `cookie:session`）。同じ名前が複数あれば最後の値。ログでは常に `***` に伏せる |
 | `status` | ステータスコード |
 | `body` | ボディ全体 |
 
@@ -199,7 +200,7 @@ mock:
 | `{{ $randomInt }}` | ランダムな整数 |
 | `{{ $randomEmail }}` | ランダムなメールアドレス |
 
-`test` は `depends_on` の順にエンドポイントを実行します。
+`test` は環境の `setup` を最初に、そのあと `depends_on` の順にエンドポイントを実行します。
 
 ## プロジェクト設定 `ajiro-api.yaml`
 
@@ -244,8 +245,46 @@ timeout_ms: 10000
 | --- | --- |
 | `base_url`（必須） | サーバーのベースURL。`ajiro-api test --base-url` で上書き可 |
 | `variables` | `{{ name }}` で使える変数。値にテンプレートも書ける |
-| `headers` | この環境の全リクエストに付けるヘッダー |
+| `headers` | この環境の全リクエストに付けるヘッダー。テンプレートはリクエストごとに展開するので、`setup` で `capture` した値も使える |
+| `setup` | ほかのエンドポイントより先に実行するエンドポイントの `id` の配列（ログインなど） |
 | `env_file` | この環境専用のdotenvファイル（プロジェクトの `env_file` より優先） |
+
+### ログインしてから全エンドポイントを実行する（`setup`）
+
+`setup` に書いたエンドポイントは、その `depends_on` も含めて最初に、すべてのテストを実行します。`test` に絞り込みを指定しても実行し、失敗したら残りのテストは実行しません。`setup` 中は、まだ `capture` していない値を使う環境の `headers` を送りません。
+
+Cookieでセッションを持つアプリ（Auth.jsなど）の例です。
+
+```yaml
+# ajiro-api.yaml
+environments:
+  local:
+    base_url: http://localhost:8000
+    setup: [auth.login]
+    headers:
+      Cookie: "session={{ session }}"
+```
+
+```yaml
+# api/auth/post-auth-login.yaml
+id: auth.login
+depends_on: [auth.csrf]          # csrf と csrfCookie を capture するエンドポイント
+request:
+  method: POST
+  path: /api/auth/callback/credentials
+  headers:
+    Content-Type: application/x-www-form-urlencoded
+    Cookie: "csrf={{ csrfCookie }}"
+  body:
+    csrfToken: "{{ csrf }}"
+    loginId: "{{ env.LOGIN_ID }}"
+    password: "{{ env.PASSWORD }}"
+tests:
+- name: signs in
+  expect: { status: 302 }
+  capture:
+    session: cookie:session
+```
 
 ## ファイルの配置とスナップショット
 

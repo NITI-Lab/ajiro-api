@@ -172,7 +172,8 @@ pub fn tool_definitions() -> Value {
                     "env": { "type": "string", "description": "Environment name from ajiro-api.yaml (default: default_env)." },
                     "filter": { "type": "string", "description": "Only run endpoints/tests whose id, file or test name contains this text, e.g. `users.create`." },
                     "update_snapshots": { "type": "boolean", "description": "Overwrite stored snapshots with the actual responses. Only use when the new behaviour is intended." },
-                    "base_url": { "type": "string", "description": "Override the environment base URL, e.g. http://localhost:8080." }
+                    "base_url": { "type": "string", "description": "Override the environment base URL, e.g. http://localhost:8080." },
+                    "smoke_unsafe": { "type": "boolean", "description": "Also send the implicit smoke request to endpoints without tests whose method may change data (POST, PUT, PATCH, DELETE). Off by default; do not enable against shared or production environments." }
                 },
                 "additionalProperties": false
             }
@@ -295,6 +296,7 @@ fn run_tool(state: &McpState, name: &str, args: &Value) -> Result<Value> {
                 filter: str_arg(args, "filter"),
                 update_snapshots: bool_arg(args, "update_snapshots"),
                 base_url: str_arg(args, "base_url"),
+                smoke_unsafe: bool_arg(args, "smoke_unsafe"),
                 ..Default::default()
             };
             Ok(serde_json::to_value(crate::runner::run_tests(

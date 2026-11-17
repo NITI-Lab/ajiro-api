@@ -87,8 +87,14 @@
         },
         "headers": {
           "type": "object",
-          "description": "Headers sent with every request in this environment.",
+          "description": "Headers sent with every request in this environment. Templates are rendered per request, so they can use values captured by `setup` endpoints (e.g. `Cookie: \"session={{ session }}\"`). While `setup` runs, a header whose captured value does not exist yet is left out.",
           "additionalProperties": { "type": "string" }
+        },
+        "setup": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Endpoint ids run before every other endpoint, with all their tests and their `depends_on` (e.g. a login that captures a session cookie). They run even when `test` is given a filter, their implicit smoke test is sent whatever the method, and a failure stops the run. Unknown ids are reported by `validate`.",
+          "examples": [["auth.login.create"]]
         },
         "env_file": {
           "type": "string",

@@ -4,6 +4,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **The implicit `smoke` test is only sent to GET, HEAD and OPTIONS.** Endpoints without tests whose method may change data (POST, PUT, PATCH, DELETE) are now skipped with a reason, instead of receiving an empty request that could log out, overwrite or create data on the server under test. Pass `ajiro-api test --smoke-unsafe` (MCP: `smoke_unsafe: true`) for the previous behaviour.
+- Environment `headers` are rendered per request, so they can use values captured during the run (e.g. `Cookie: "session={{ session }}"`). `{{ env.X }}` still has to resolve when the run starts.
+
+### Added
+
+- `environments.<name>.setup`: endpoint ids (e.g. a login) run before every other endpoint, with their `depends_on`, even when `test` is given a filter. A failure stops the run. While setup runs, an environment header whose captured value does not exist yet is left out. `validate` reports unknown ids.
+- `capture: { name: cookie:<cookie-name> }` reads a cookie from the `Set-Cookie` response headers (the last one wins). Captured cookies are always masked in logs.
+
 ## [0.1.2] - 2026-11-17
 
 ### Fixed

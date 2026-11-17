@@ -59,7 +59,7 @@ Hono はミドルウェアとハンドラーを構文だけでは区別できな
 
 ## test
 
-YAMLのリクエストを実行し、レスポンスを検証します。`depends_on` の順に実行し、`tests` が空のエンドポイントには暗黙の `smoke` テスト（ステータス500未満）を適用します。
+YAMLのリクエストを実行し、レスポンスを検証します。環境の `setup` を最初に、そのあと `depends_on` の順に実行し、`tests` が空のエンドポイントには暗黙の `smoke` テスト（ステータス500未満）を適用します。`smoke` を送るのは GET・HEAD・OPTIONS だけです。POST・PUT・PATCH・DELETE はデータを変えうるので、`--smoke-unsafe` を付けない限り送らずにスキップします。
 
 ```bash
 ajiro-api test [OPTIONS] [FILTER]
@@ -76,6 +76,7 @@ ajiro-api test [OPTIONS] [FILTER]
 | `--bail` | 最初の失敗で停止 |
 | `--timeout <MS>` | リクエストのタイムアウト（ミリ秒） |
 | `-v, --verbose` | 成功したテストのリクエスト・レスポンスも表示 |
+| `--smoke-unsafe` | `tests` が空の POST・PUT・PATCH・DELETE にも `smoke` のリクエストを送る。共有環境や本番では使わない |
 
 `--json` の主な項目:
 

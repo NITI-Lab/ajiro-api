@@ -84,6 +84,17 @@ pub fn list(dir: &Path, args: &ListArgs) -> Result<i32> {
 pub fn validate_project(project: &Project) -> Vec<crate::project::LoadError> {
     let (eps, mut errs) = load_endpoints(project);
     errs.extend(validate_endpoints(&eps));
+    let known: std::collections::HashSet<&str> = eps.iter().map(|e| e.def.id.as_str()).collect();
+    for (name, env) in &project.config.environments {
+        for id in &env.setup {
+            if !known.contains(id.as_str()) {
+                errs.push(crate::project::LoadError {
+                    file: "ajiro-api.yaml".into(),
+                    message: format!("environments.{}.setup refers to unknown id `{}`", name, id),
+                });
+            }
+        }
+    }
     errs
 }
 

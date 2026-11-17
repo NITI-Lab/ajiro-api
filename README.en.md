@@ -49,7 +49,7 @@ ajiro-api scan            # reads routes and writes YAML into api/
 ajiro-api test            # runs every endpoint and checks the responses
 ```
 
-Endpoints with empty `tests:` get an implicit `smoke` test (status < 500).
+Endpoints with empty `tests:` get an implicit `smoke` test (status < 500). It is only sent to GET, HEAD and OPTIONS; POST, PUT, PATCH and DELETE may change data and are skipped unless you pass `ajiro-api test --smoke-unsafe`. For APIs behind a login, list the login endpoint in the environment's `setup`: it runs first, and the token or cookie it captures can be sent with every request through the environment `headers` (see the [YAML reference](docs/yaml-reference.md)).
 
 ## YAML example
 

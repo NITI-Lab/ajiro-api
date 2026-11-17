@@ -73,6 +73,9 @@ pub struct TestOptions {
     pub base_url: Option<String>,
     /// Override config `timeout_ms`.
     pub timeout_ms: Option<u64>,
+    /// Also run the implicit smoke test for endpoints whose method may change
+    /// data (POST, PUT, PATCH, DELETE, ...). Off by default.
+    pub smoke_unsafe: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
