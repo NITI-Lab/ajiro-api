@@ -629,3 +629,225 @@ app.route("/api", api);
         r.warnings
     );
 }
+
+const WRAP_FACTORY: &str = "import { OpenAPIHono } from '@hono/zod-openapi';\nconst wrap = <A>(app: A): A => app;\nexport const createOpenAPIHono = <E extends Env = Env>(init = {}) =>\n  wrap(new OpenAPIHono<E>({ ...init }));\n";
+
+#[test]
+fn hono_factory_wrapping_the_constructor_in_another_call_is_recognised() {
+    let r = scan_sources(
+        "hono",
+        &[
+            ("src/factory.ts", WRAP_FACTORY),
+            (
+                "src/sub.ts",
+                "import { createOpenAPIHono } from './factory';\nexport const sub = createOpenAPIHono();\nsub.post('/items', (c) => c.text('ok'));\n",
+            ),
+            (
+                "src/index.ts",
+                "import { createOpenAPIHono } from './factory';\nimport { sub } from './sub';\nconst app = createOpenAPIHono();\napp.get('/health', (c) => c.text('ok'));\napp.route('/api', sub);\nexport default app;\n",
+            ),
+        ],
+    );
+    assert_eq!(
+        method_paths(&r),
+        vec!["POST /api/items", "GET /health"],
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_alias_from_tsconfig_paths_extends_and_jsonc() {
+    let factory = "import { OpenAPIHono } from '@hono/zod-openapi';\nexport const createOpenAPIHono = () => new OpenAPIHono();\n";
+    let r = scan_sources(
+        "hono",
+        &[
+            // JSONC: comments and trailing commas; `paths` come from a base config.
+            (
+                "tsconfig.base.json",
+                "{\n  // aliases\n  \"compilerOptions\": { \"baseUrl\": \".\", \"paths\": { \"@app/*\": [\"app/src/*\"], }, },\n}\n",
+            ),
+            (
+                "app/tsconfig.json",
+                "{ /* x */ \"extends\": \"../tsconfig.base\" }\n",
+            ),
+            ("app/src/common/openApiHono.ts", factory),
+            (
+                "app/src/common/index.ts",
+                "export { createOpenAPIHono } from './openApiHono';\n",
+            ),
+            (
+                "app/src/sub.ts",
+                "import { createOpenAPIHono } from '@app/common';\nexport const sub = createOpenAPIHono();\nsub.post('/items', (c) => c.text('ok'));\n",
+            ),
+            (
+                "app/src/index.ts",
+                "import { createOpenAPIHono } from './common';\nimport { sub } from '@app/sub';\nconst app = createOpenAPIHono();\napp.get('/health', (c) => c.text('ok'));\napp.route('/api', sub);\nexport default app;\n",
+            ),
+        ],
+    );
+    assert_eq!(
+        method_paths(&r),
+        vec!["POST /api/items", "GET /health"],
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_alias_without_tsconfig_falls_back_to_src() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "src/sub.ts",
+                "import { Hono } from 'hono';\nexport const sub = new Hono();\nsub.get('/x', (c) => c.text('x'));\n",
+            ),
+            (
+                "src/index.ts",
+                "import { Hono } from 'hono';\nimport { sub } from '@/sub';\nconst app = new Hono();\napp.route('/api', sub);\nexport default app;\n",
+            ),
+        ],
+    );
+    assert_eq!(method_paths(&r), vec!["GET /api/x"], "{:?}", r.warnings);
+}
+
+#[test]
+fn hono_instance_returned_from_function_keeps_mount_prefix() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "src/trial.ts",
+                "import { Hono } from 'hono';\nexport function createTrialRoutes() {\n  return new Hono()\n    .post('/sessions', (c) => c.text('a'))\n    .all('/x', (c) => c.text('b'));\n}\nexport const trial = createTrialRoutes();\n",
+            ),
+            (
+                "src/arrow.ts",
+                "import { Hono } from 'hono';\nexport const makeArrow = () => new Hono().get('/ping', (c) => c.text('p'));\nexport const arrow = makeArrow();\n",
+            ),
+            (
+                "src/index.ts",
+                "import { Hono } from 'hono';\nimport { trial } from './trial';\nimport { arrow } from './arrow';\nconst app = new Hono();\nconst routes = app.route('/v1/trial', trial).route('/v1/arrow', arrow);\nexport default app;\n",
+            ),
+        ],
+    );
+    let mp = method_paths(&r);
+    assert!(
+        mp.contains(&"POST /v1/trial/sessions".to_string()),
+        "{:?}",
+        mp
+    );
+    assert!(mp.contains(&"GET /v1/arrow/ping".to_string()), "{:?}", mp);
+    assert!(
+        !mp.iter().any(|x| x == "POST /sessions" || x == "GET /ping"),
+        "{:?}",
+        mp
+    );
+}
+
+#[test]
+fn hono_uncalled_factory_routes_are_not_emitted() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "src/trial.ts",
+                "import { Hono } from 'hono';\nexport function stubResource(name: string) {\n  return new Hono().get('/:id', (c) => c.text(name));\n}\nexport const trial = new Hono().post('/sessions', (c) => c.text('ok'));\n",
+            ),
+            (
+                "src/index.ts",
+                "import { Hono } from 'hono';\nimport { trial } from './trial';\nconst app = new Hono();\napp.route('/v1/trial', trial);\nexport default app;\n",
+            ),
+        ],
+    );
+    assert_eq!(method_paths(&r), vec!["POST /v1/trial/sessions"]);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("factory function that is never called")),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_called_factory_is_mounted_per_call_site() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "src/res.ts",
+                "import { Hono } from 'hono';\nexport function resource(n: string) {\n  return new Hono().get('/:id', (c) => c.text(n));\n}\n",
+            ),
+            (
+                "src/index.ts",
+                "import { Hono } from 'hono';\nimport { resource } from './res';\nconst app = new Hono();\napp.route('/a', resource('a'));\napp.route('/b', resource('b'));\nexport default app;\n",
+            ),
+        ],
+    );
+    assert_eq!(
+        method_paths(&r),
+        vec!["GET /a/{id}", "GET /b/{id}"],
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_duplicate_unconnected_createroute_is_listed_in_a_warning() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "a.routes.ts",
+                "import { createRoute } from '@hono/zod-openapi';\nexport const a = createRoute({ method: 'get', path: '/' });\n",
+            ),
+            (
+                "b.routes.ts",
+                "import { createRoute } from '@hono/zod-openapi';\nexport const b = createRoute({ method: 'get', path: '/' });\n",
+            ),
+        ],
+    );
+    assert!(
+        r.warnings.iter().any(|w| w.contains("share `GET /`")
+            && w.contains("a.routes.ts:2")
+            && w.contains("b.routes.ts:2")),
+        "{:?}",
+        r.warnings
+    );
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("No Hono app instance") && w.contains("factory function")),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_unresolved_mount_names_the_cause_and_is_not_duplicated() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "src/ranking.ts",
+                "import { make } from './nowhere';\nexport const ranking = make();\nranking.get('/r', (c) => c.text('r'));\n",
+            ),
+            (
+                "src/index.ts",
+                "import { Hono } from 'hono';\nimport { ranking } from './ranking';\nimport { other } from '@/other';\nconst app = new Hono();\napp.route('/a', other);\napp.route('/b', other);\napp.route('/c', ranking);\nexport default app;\n",
+            ),
+        ],
+    );
+    let w: Vec<&String> = r
+        .warnings
+        .iter()
+        .filter(|w| w.contains("could not resolve mounted app `other`"))
+        .collect();
+    assert_eq!(w.len(), 1, "{:?}", r.warnings);
+    assert!(
+        w[0].contains("alias") && w[0].contains("also mounted at line"),
+        "{}",
+        w[0]
+    );
+}
