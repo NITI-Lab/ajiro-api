@@ -310,7 +310,10 @@ struct RawCfg {
 
 /// Lexically normalize a path to an absolute, `/`-separated string.
 fn abs_norm(p: &Path) -> String {
-    let abs = if p.is_absolute() {
+    // `has_root`, not `is_absolute`: values produced by this function
+    // (`/C:/x/y` on Windows) are fed back in, e.g. a tsconfig `baseUrl`
+    // joined with a `paths` target; they must not get the current dir again.
+    let abs = if p.has_root() || p.is_absolute() {
         p.to_path_buf()
     } else {
         std::env::current_dir().unwrap_or_default().join(p)
