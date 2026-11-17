@@ -1,7 +1,7 @@
 {
   "name": "ajiro-api",
   "mcpName": "io.github.NITI-Lab/ajiro-api",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "API definitions, regression tests and mocks for AI coding agents. Scans backend routes into YAML.",
   "keywords": ["api", "testing", "openapi", "claude-code", "codex", "mcp", "cli"],
   "license": "MIT",
@@ -16,10 +16,10 @@
   "files": ["bin/", "README.md", "LICENSE"],
   "engines": { "node": ">=18" },
   "optionalDependencies": {
-    "@niti-lab/ajiro-api-linux-x64": "0.2.0",
-    "@niti-lab/ajiro-api-linux-arm64": "0.2.0",
-    "@niti-lab/ajiro-api-darwin-x64": "0.2.0",
-    "@niti-lab/ajiro-api-darwin-arm64": "0.2.0",
-    "@niti-lab/ajiro-api-win32-x64": "0.2.0"
+    "@niti-lab/ajiro-api-linux-x64": "0.2.1",
+    "@niti-lab/ajiro-api-linux-arm64": "0.2.1",
+    "@niti-lab/ajiro-api-darwin-x64": "0.2.1",
+    "@niti-lab/ajiro-api-darwin-arm64": "0.2.1",
+    "@niti-lab/ajiro-api-win32-x64": "0.2.1"
   }
 }
