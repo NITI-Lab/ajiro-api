@@ -8,23 +8,7 @@
 
 Ajiro API（`ajiro-api`）は、バックエンドのルーティングを静的解析してエンドポイントごとのYAMLに書き出し、そのYAMLを回帰テストとして実行し、モックとしても配信するCLIです。Claude CodeやCodexが「実装 → scan → test → 修正 → 再テスト」を人手なしで回せるように作っています。
 
-```console
-$ npx -y ajiro-api init && npx -y ajiro-api scan
-+ POST /auth/login  api/auth/post-auth-login.yaml
-+ GET /todos  api/todos/get-todos.yaml
-+ GET /todos/stats  api/todos/get-todos-stats.yaml
-...
-hono: 8 created, 0 updated, 0 unchanged (8 endpoints, 31 ms)
-
-$ npx -y ajiro-api test        # エージェントがルートを /todos/:id より後ろに移した後
-✗ todos.stats.list / returns counts (0ms)
-    status: expected status 200, got 404
-    body.match: $.total: path not found (expected >= 1)
-    → api/todos/get-todos-stats.yaml
-    → handler: src/routes/todos.ts:83
-
-33 passed, 1 failed, 0 errors, 0 skipped (34 total) in 49ms
-```
+![デモ：scan と test が通る → ルートの移動で GET /todos/stats が 404 になる → 修正して 34 件すべて通る](docs/demo/demo.gif)
 
 `--json` を付けると、同じ失敗がリクエスト・レスポンス本文・ハンドラの位置付きで出力されるので、エージェントはそのまま直して再実行できます。Claude Codeでは次の2行で入ります。
 
@@ -178,17 +162,17 @@ MCPサーバーだけを使う場合は、`.mcp.json` に次を追加します�
 
 ## 対応フレームワーク
 
-| フレームワーク | `framework` の値 | 優先度 |
-| --- | --- | --- |
-| Next.js Route Handlers | `nextjs` | Must（初回公開） |
-| Hono | `hono` | Must（初回公開） |
-| FastAPI | `fastapi` | Must（初回公開） |
-| Express | `express` | Should（公開後1ヶ月以内） |
-| Go net/http | `go-nethttp` | Should（公開後1ヶ月以内） |
-| Go chi | `go-chi` | Should（公開後1ヶ月以内） |
-| Go Echo | `go-echo` | Should（公開後1ヶ月以内） |
+| フレームワーク | `framework` の値 |
+| --- | --- |
+| Next.js Route Handlers | `nextjs` |
+| Hono | `hono` |
+| FastAPI | `fastapi` |
+| Express | `express` |
+| Go net/http | `go-nethttp` |
+| Go chi | `go-chi` |
+| Go Echo | `go-echo` |
 
-GraphQL、gRPC、WebSocketは対象外です。優先度は要件定義書に基づきます。
+GraphQL、gRPC、WebSocketは対象外です。
 
 ## CIで使う
 

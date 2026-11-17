@@ -8,23 +8,7 @@ English | [日本語](README.ja.md)
 
 Ajiro API (`ajiro-api`) is a CLI that statically scans your backend routes into one YAML file per endpoint, runs those files as regression tests, and serves them as mocks. It is built so that Claude Code and Codex can run "implement -> scan -> test -> fix -> re-test" with no human in the loop.
 
-```console
-$ npx -y ajiro-api init && npx -y ajiro-api scan
-+ POST /auth/login  api/auth/post-auth-login.yaml
-+ GET /todos  api/todos/get-todos.yaml
-+ GET /todos/stats  api/todos/get-todos-stats.yaml
-...
-hono: 8 created, 0 updated, 0 unchanged (8 endpoints, 31 ms)
-
-$ npx -y ajiro-api test        # after the agent moved a route below /todos/:id
-✗ todos.stats.list / returns counts (0ms)
-    status: expected status 200, got 404
-    body.match: $.total: path not found (expected >= 1)
-    → api/todos/get-todos-stats.yaml
-    → handler: src/routes/todos.ts:83
-
-33 passed, 1 failed, 0 errors, 0 skipped (34 total) in 49ms
-```
+![Demo: ajiro-api scan and test pass, a moved route makes GET /todos/stats return 404, the fix makes all 34 tests pass again](docs/demo/demo.gif)
 
 With `--json`, the same failure comes with the request, the response body and the handler location, so the agent can fix it and re-run on its own. In Claude Code:
 
@@ -178,15 +162,15 @@ All flags: [docs/cli-reference.md](docs/cli-reference.md) (Japanese) or `ajiro-a
 
 ## Supported frameworks
 
-| Framework | `framework` value | Priority |
-| --- | --- | --- |
-| Next.js Route Handlers | `nextjs` | Must (first release) |
-| Hono | `hono` | Must (first release) |
-| FastAPI | `fastapi` | Must (first release) |
-| Express | `express` | Should (within a month after release) |
-| Go net/http | `go-nethttp` | Should (within a month after release) |
-| Go chi | `go-chi` | Should (within a month after release) |
-| Go Echo | `go-echo` | Should (within a month after release) |
+| Framework | `framework` value |
+| --- | --- |
+| Next.js Route Handlers | `nextjs` |
+| Hono | `hono` |
+| FastAPI | `fastapi` |
+| Express | `express` |
+| Go net/http | `go-nethttp` |
+| Go chi | `go-chi` |
+| Go Echo | `go-echo` |
 
 GraphQL, gRPC and WebSocket are out of scope.
 
