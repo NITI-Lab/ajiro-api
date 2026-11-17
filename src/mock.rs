@@ -124,7 +124,7 @@ impl Shared {
     /// Current routes; reloads first when any endpoint file changed.
     fn routes(&self) -> Arc<Vec<Route>> {
         let fp = fingerprint(&self.project.api_dir());
-        let mut reg = self.registry.lock().unwrap();
+        let mut reg = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if reg.fp != fp {
             let routes = load_routes(&self.project, true);
             eprintln!("reloaded: {} endpoints", routes.len());
@@ -772,4 +772,368 @@ pub fn run_cli(dir: &Path, args: &MockArgs) -> Result<i32> {
     }
     handle.wait();
     Ok(crate::exit::OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MockSpec, RequestSpec};
+    use indexmap::IndexMap;
+
+    fn endpoint(id: &str, method: &str, path: &str, mock: Option<MockSpec>) -> EndpointDef {
+        EndpointDef {
+            version: 1,
+            id: id.into(),
+            summary: None,
+            description: None,
+            tags: vec![],
+            task: None,
+            depends_on: vec![],
+            request: RequestSpec {
+                method: method.into(),
+                path: path.into(),
+                ..Default::default()
+            },
+            source: None,
+            tests: vec![],
+            mock,
+        }
+    }
+
+    fn route(id: &str, method: &str, path: &str) -> Route {
+        Route {
+            def: endpoint(id, method, path, None),
+            rel_path: format!("{id}.yaml"),
+            segs: parse_segs(path),
+        }
+    }
+
+    fn segs(path: &str) -> Vec<String> {
+        path.split('/')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    }
+
+    fn ctx() -> Ctx {
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), "42".to_string());
+        let mut headers = HashMap::new();
+        headers.insert("x-token".to_string(), "abc".to_string());
+        Ctx {
+            params,
+            query: vec![("q".into(), "rust".into())],
+            headers,
+            body: Some(json!({"user": {"name": "Ada"}, "items": [10, 20]})),
+        }
+    }
+
+    // ---- parse_segs ----
+
+    #[test]
+    fn parse_segs_splits_literals_and_params() {
+        let s = parse_segs("/users/{id}/posts");
+        assert_eq!(s.len(), 3);
+        assert!(matches!(&s[0], Seg::Lit(l) if l == "users"));
+        assert!(matches!(&s[1], Seg::Param(p) if p == "id"));
+        assert!(matches!(&s[2], Seg::Lit(l) if l == "posts"));
+    }
+
+    #[test]
+    fn parse_segs_ignores_empty_segments_and_treats_empty_braces_as_literal() {
+        assert_eq!(parse_segs("//a//b/").len(), 2);
+        assert!(matches!(&parse_segs("/{}")[0], Seg::Lit(l) if l == "{}"));
+        assert!(parse_segs("/").is_empty());
+    }
+
+    // ---- find_route ----
+
+    #[test]
+    fn find_route_matches_exact_path() {
+        let routes = vec![route("list", "GET", "/users")];
+        let (r, params) = find_route(&routes, "GET", &segs("/users")).unwrap();
+        assert_eq!(r.def.id, "list");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn find_route_extracts_path_parameters() {
+        let routes = vec![route("get", "GET", "/users/{id}/posts/{post}")];
+        let (_, params) = find_route(&routes, "GET", &segs("/users/7/posts/9")).unwrap();
+        assert_eq!(params.get("id").map(String::as_str), Some("7"));
+        assert_eq!(params.get("post").map(String::as_str), Some("9"));
+    }
+
+    #[test]
+    fn find_route_respects_method() {
+        let routes = vec![route("get", "GET", "/users")];
+        assert!(find_route(&routes, "POST", &segs("/users")).is_none());
+    }
+
+    #[test]
+    fn find_route_method_matching_is_case_insensitive_on_definition() {
+        let routes = vec![route("get", "get", "/users")];
+        assert!(find_route(&routes, "GET", &segs("/users")).is_some());
+    }
+
+    #[test]
+    fn find_route_rejects_segment_count_mismatch() {
+        let routes = vec![route("get", "GET", "/users/{id}")];
+        assert!(find_route(&routes, "GET", &segs("/users")).is_none());
+        assert!(find_route(&routes, "GET", &segs("/users/1/extra")).is_none());
+    }
+
+    #[test]
+    fn find_route_prefers_static_over_param() {
+        let routes = vec![
+            route("by_id", "GET", "/users/{id}"),
+            route("me", "GET", "/users/me"),
+        ];
+        let (r, params) = find_route(&routes, "GET", &segs("/users/me")).unwrap();
+        assert_eq!(r.def.id, "me");
+        assert!(params.is_empty());
+        let (r, _) = find_route(&routes, "GET", &segs("/users/5")).unwrap();
+        assert_eq!(r.def.id, "by_id");
+    }
+
+    #[test]
+    fn find_route_earlier_static_segments_weigh_more() {
+        let routes = vec![
+            route("late_static", "GET", "/{a}/b"),
+            route("early_static", "GET", "/a/{b}"),
+        ];
+        let (r, _) = find_route(&routes, "GET", &segs("/a/b")).unwrap();
+        assert_eq!(r.def.id, "early_static");
+    }
+
+    #[test]
+    fn find_route_head_falls_back_to_get() {
+        let routes = vec![route("get", "GET", "/users")];
+        assert!(find_route(&routes, "HEAD", &segs("/users")).is_some());
+    }
+
+    #[test]
+    fn find_route_head_prefers_explicit_head_route() {
+        let routes = vec![
+            route("get", "GET", "/users"),
+            route("head", "HEAD", "/users"),
+        ];
+        let (r, _) = find_route(&routes, "HEAD", &segs("/users")).unwrap();
+        assert_eq!(r.def.id, "head");
+    }
+
+    #[test]
+    fn find_route_root_path() {
+        let routes = vec![route("root", "GET", "/")];
+        assert!(find_route(&routes, "GET", &[]).is_some());
+    }
+
+    #[test]
+    fn describe_formats_uppercase_method_and_path() {
+        let r = route("x", "post", "/users/{id}");
+        assert_eq!(describe(&r), "POST /users/{id}");
+    }
+
+    // ---- templating ----
+
+    #[test]
+    fn render_str_without_template_is_unchanged() {
+        assert_eq!(render_str("plain", &ctx()), json!("plain"));
+    }
+
+    #[test]
+    fn render_str_single_template_keeps_json_type() {
+        let c = ctx();
+        assert_eq!(render_str("{{body.items.1}}", &c), json!(20));
+        assert_eq!(render_str("{{ body.user }}", &c), json!({"name": "Ada"}));
+    }
+
+    #[test]
+    fn render_str_interpolates_params_query_headers_and_body() {
+        let c = ctx();
+        assert_eq!(
+            render_str(
+                "id={{params.id}} q={{query.q}} t={{headers.X-Token}} n={{body.user.name}}",
+                &c
+            ),
+            json!("id=42 q=rust t=abc n=Ada")
+        );
+    }
+
+    #[test]
+    fn render_str_unknown_variable_renders_empty() {
+        let c = ctx();
+        assert_eq!(render_str("a{{params.nope}}b", &c), json!("ab"));
+        assert_eq!(render_str("{{params.nope}}", &c), json!(""));
+    }
+
+    #[test]
+    fn render_str_unterminated_template_is_kept_verbatim() {
+        assert_eq!(render_str("x {{params.id", &ctx()), json!("x {{params.id"));
+    }
+
+    #[test]
+    fn render_str_uuid_and_timestamp_helpers() {
+        let c = ctx();
+        let u = render_str("{{$uuid}}", &c);
+        assert_eq!(u.as_str().unwrap().len(), 36);
+        assert!(render_str("{{$timestamp}}", &c).is_u64());
+        let d = render_str("{{$isoDate}}", &c);
+        assert!(d.as_str().unwrap().ends_with('Z'));
+    }
+
+    #[test]
+    fn render_recurses_into_objects_and_arrays() {
+        let v = json!({"a": ["{{params.id}}", 5], "b": {"c": "x-{{query.q}}"}, "d": true});
+        assert_eq!(
+            render(&v, &ctx()),
+            json!({"a": ["42", 5], "b": {"c": "x-rust"}, "d": true})
+        );
+    }
+
+    #[test]
+    fn json_path_walks_objects_and_arrays() {
+        let v = json!({"a": {"b": [1, {"c": 3}]}});
+        assert_eq!(json_path(&v, "a.b.1.c"), Some(&json!(3)));
+        assert_eq!(json_path(&v, "a.x"), None);
+        assert_eq!(json_path(&v, "a.b.notanindex"), None);
+        assert_eq!(json_path(&v, ""), Some(&v));
+    }
+
+    #[test]
+    fn scalar_text_formats_values() {
+        assert_eq!(scalar_text(&json!("s")), "s");
+        assert_eq!(scalar_text(&Value::Null), "");
+        assert_eq!(scalar_text(&json!(5)), "5");
+        assert_eq!(scalar_text(&json!(true)), "true");
+    }
+
+    // ---- scenario selection ----
+
+    #[test]
+    fn select_response_uses_scenario_then_default() {
+        let resp = |status| MockResponse {
+            status,
+            ..Default::default()
+        };
+        let mut scenarios = IndexMap::new();
+        scenarios.insert("boom".to_string(), resp(500));
+        let def = endpoint(
+            "e",
+            "GET",
+            "/e",
+            Some(MockSpec {
+                default: Some(resp(200)),
+                scenarios,
+            }),
+        );
+        let (r, label) = select_response(&def, Some("boom")).unwrap();
+        assert_eq!((r.status, label.as_str()), (500, "boom"));
+        let (r, label) = select_response(&def, Some("missing")).unwrap();
+        assert_eq!((r.status, label.as_str()), (200, "default"));
+        let (_, label) = select_response(&def, None).unwrap();
+        assert_eq!(label, "default");
+    }
+
+    #[test]
+    fn select_response_none_without_mock() {
+        let def = endpoint("e", "GET", "/e", None);
+        assert!(select_response(&def, None).is_none());
+    }
+
+    // ---- HTTP helpers ----
+
+    #[test]
+    fn percent_decode_handles_escapes_plus_and_invalid_sequences() {
+        assert_eq!(percent_decode("a%20b+c"), "a b c");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("caf%C3%A9"), "caf\u{e9}");
+    }
+
+    #[test]
+    fn parse_pairs_splits_and_decodes() {
+        assert_eq!(
+            parse_pairs("a=1&b=x%20y&flag&&"),
+            vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "x y".to_string()),
+                ("flag".to_string(), String::new()),
+            ]
+        );
+    }
+
+    // ---- CORS ----
+
+    fn cors_value(h: &[(String, String)], name: &str) -> Option<String> {
+        h.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn cors_headers_allow_any_origin_and_default_wildcard_headers() {
+        let h = cors_headers(&HashMap::new());
+        assert_eq!(cors_value(&h, "Access-Control-Allow-Origin").as_deref(), Some("*"));
+        assert_eq!(cors_value(&h, "Access-Control-Allow-Headers").as_deref(), Some("*"));
+        assert_eq!(cors_value(&h, "Access-Control-Max-Age").as_deref(), Some("86400"));
+        assert!(cors_value(&h, "Access-Control-Allow-Methods")
+            .unwrap()
+            .contains("OPTIONS"));
+    }
+
+    #[test]
+    fn cors_headers_echo_requested_headers_for_preflight() {
+        let mut req = HashMap::new();
+        req.insert(
+            "access-control-request-headers".to_string(),
+            "x-custom, content-type".to_string(),
+        );
+        let h = cors_headers(&req);
+        assert_eq!(
+            cors_value(&h, "Access-Control-Allow-Headers").as_deref(),
+            Some("x-custom, content-type")
+        );
+    }
+
+    // ---- misc ----
+
+    #[test]
+    fn json_out_sets_json_content_type() {
+        let o = json_out(404, &json!({"a": 1}));
+        assert_eq!(o.status, 404);
+        assert_eq!(o.headers[0].1, "application/json");
+        let back: Value = serde_json::from_slice(&o.body).unwrap();
+        assert_eq!(back, json!({"a": 1}));
+    }
+
+    #[test]
+    fn iso_now_has_expected_shape() {
+        let s = iso_now();
+        assert_eq!(s.len(), 24, "{s}");
+        let b = s.as_bytes();
+        assert_eq!(b[4], b'-');
+        assert_eq!(b[7], b'-');
+        assert_eq!(b[10], b'T');
+        assert_eq!(b[13], b':');
+        assert_eq!(b[16], b':');
+        assert_eq!(b[19], b'.');
+        assert_eq!(b[23], b'Z');
+        let year: i32 = s[..4].parse().unwrap();
+        assert!(year >= 2024);
+    }
+
+    #[test]
+    fn mutex_poison_is_recovered() {
+        let reg = Arc::new(Mutex::new(Registry {
+            routes: Arc::new(vec![]),
+            fp: vec![],
+        }));
+        let r2 = reg.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = r2.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert!(reg.is_poisoned());
+        let g = reg.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(g.routes.is_empty());
+    }
 }

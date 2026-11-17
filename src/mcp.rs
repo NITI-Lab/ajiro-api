@@ -335,3 +335,241 @@ fn run_tool(state: &McpState, name: &str, args: &Value) -> Result<Value> {
         other => anyhow::bail!("unknown tool {}", other),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> McpState {
+        McpState::new(&std::env::temp_dir())
+    }
+
+    fn call(state: &mut McpState, msg: Value) -> Value {
+        handle_message(state, &msg).expect("expected a reply")
+    }
+
+    #[test]
+    fn test_instructions_non_empty() {
+        assert!(!INSTRUCTIONS.trim().is_empty());
+        assert!(INSTRUCTIONS.contains("scan"));
+        assert!(INSTRUCTIONS.contains("validate"));
+    }
+
+    #[test]
+    fn test_parse_initialize_request() {
+        let mut st = state();
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}),
+        );
+        assert_eq!(r["id"], 1);
+        assert_eq!(r["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(r["result"]["serverInfo"]["name"], "ajiro-api");
+        assert_eq!(
+            r["result"]["serverInfo"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(r["result"]["capabilities"]["tools"].is_object());
+        assert_eq!(r["result"]["instructions"], INSTRUCTIONS);
+    }
+
+    #[test]
+    fn test_initialize_unsupported_version_falls_back() {
+        let r = initialize_result(&json!({"protocolVersion":"1999-01-01"}));
+        assert_eq!(r["protocolVersion"], SUPPORTED_VERSIONS[0]);
+        let r = initialize_result(&Value::Null);
+        assert_eq!(r["protocolVersion"], SUPPORTED_VERSIONS[0]);
+    }
+
+    #[test]
+    fn test_ping() {
+        let mut st = state();
+        let r = call(&mut st, json!({"jsonrpc":"2.0","id":"abc","method":"ping"}));
+        assert_eq!(r["id"], "abc");
+        assert_eq!(r["result"], json!({}));
+    }
+
+    #[test]
+    fn test_tools_list() {
+        let mut st = state();
+        let r = call(&mut st, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+        let tools = r["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            vec!["scan", "test", "list", "validate", "get_endpoint", "schema"]
+        );
+        for t in tools {
+            assert!(!t["description"].as_str().unwrap().is_empty());
+            assert_eq!(t["inputSchema"]["type"], "object");
+        }
+    }
+
+    #[test]
+    fn test_tools_call_schema_returns_structured_content() {
+        let mut st = state();
+        for which in ["endpoint", "config"] {
+            let r = call(
+                &mut st,
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                       "params":{"name":"schema","arguments":{"which":which}}}),
+            );
+            let result = &r["result"];
+            assert!(result.get("isError").is_none());
+            assert!(result["structuredContent"].is_object());
+            let text = result["content"][0]["text"].as_str().unwrap();
+            let parsed: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(parsed, result["structuredContent"]);
+        }
+    }
+
+    #[test]
+    fn test_tools_call_schema_unknown_which_is_tool_error() {
+        let mut st = state();
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
+                   "params":{"name":"schema","arguments":{"which":"bogus"}}}),
+        );
+        assert!(r.get("error").is_none());
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unknown schema"));
+    }
+
+    #[test]
+    fn test_tools_call_without_project_is_tool_error_not_rpc_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = McpState::new(dir.path());
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list"}}),
+        );
+        assert!(r.get("error").is_none());
+        assert_eq!(r["result"]["isError"], true);
+    }
+
+    #[test]
+    fn test_tools_call_unknown_tool_is_invalid_params() {
+        let mut st = state();
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"nope"}}),
+        );
+        assert_eq!(r["error"]["code"], -32602);
+        assert!(r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool"));
+    }
+
+    #[test]
+    fn test_tools_call_missing_name() {
+        let mut st = state();
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{}}),
+        );
+        assert_eq!(r["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn test_tools_call_non_object_arguments() {
+        let mut st = state();
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":8,"method":"tools/call",
+                   "params":{"name":"schema","arguments":["x"]}}),
+        );
+        assert_eq!(r["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn test_unknown_method_returns_error() {
+        let mut st = state();
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":9,"method":"resources/list"}),
+        );
+        assert_eq!(r["id"], 9);
+        assert_eq!(r["error"]["code"], -32601);
+        assert!(r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("resources/list"));
+    }
+
+    #[test]
+    fn test_notification_gets_no_reply_and_sets_initialized() {
+        let mut st = state();
+        assert!(!st.initialized);
+        let r = handle_message(
+            &mut st,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        );
+        assert!(r.is_none());
+        assert!(st.initialized);
+        assert!(handle_message(&mut st, &json!({"jsonrpc":"2.0","method":"foo"})).is_none());
+    }
+
+    #[test]
+    fn test_invalid_requests() {
+        let mut st = state();
+        let r = call(&mut st, json!("just a string"));
+        assert_eq!(r["error"]["code"], -32600);
+        assert_eq!(r["id"], Value::Null);
+        let r = call(&mut st, json!({"jsonrpc":"2.0","id":1}));
+        assert_eq!(r["error"]["code"], -32600);
+        assert!(handle_message(&mut st, &json!({"jsonrpc":"2.0"})).is_none());
+    }
+
+    #[test]
+    fn test_batch_handling() {
+        let mut st = state();
+        let r = call(&mut st, json!([]));
+        assert_eq!(r["error"]["code"], -32600);
+
+        let r = call(
+            &mut st,
+            json!([
+                {"jsonrpc":"2.0","id":1,"method":"ping"},
+                {"jsonrpc":"2.0","method":"notifications/initialized"},
+                {"jsonrpc":"2.0","id":2,"method":"nope"}
+            ]),
+        );
+        let arr = r.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["id"], 1);
+        assert_eq!(arr[1]["error"]["code"], -32601);
+
+        let r = handle_message(
+            &mut st,
+            &json!([{"jsonrpc":"2.0","method":"notifications/initialized"}]),
+        );
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn test_text_and_error_result_shapes() {
+        let v = json!({"a": 1});
+        let r = text_result(&v);
+        assert_eq!(r["structuredContent"], v);
+        assert_eq!(r["content"][0]["type"], "text");
+        let e = error_result("boom");
+        assert_eq!(e["isError"], true);
+        assert_eq!(e["content"][0]["text"], "boom");
+    }
+
+    #[test]
+    fn test_arg_helpers() {
+        let args = json!({"s":"x","b":true,"n":1});
+        assert_eq!(str_arg(&args, "s"), Some("x".to_string()));
+        assert_eq!(str_arg(&args, "n"), None);
+        assert_eq!(str_arg(&args, "missing"), None);
+        assert!(bool_arg(&args, "b"));
+        assert!(!bool_arg(&args, "s"));
+        assert!(!bool_arg(&args, "missing"));
+    }
+}
