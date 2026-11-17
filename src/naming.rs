@@ -15,36 +15,85 @@ use std::path::{Path, PathBuf};
 /// Also collapses duplicate slashes, ensures a leading `/` and removes a
 /// trailing `/` (except for the root path).
 pub fn normalize_path(raw: &str) -> String {
+    normalize_path_checked(raw).0
+}
+
+/// Placeholder name for a parameter whose name cannot be recovered.
+pub const UNNAMED_PARAM: &str = "param";
+
+/// Like [`normalize_path`], and also reports whether any parameter had no
+/// recoverable name (it became `{param}`). The scanner turns that into a
+/// warning that quotes the raw path.
+pub fn normalize_path_checked(raw: &str) -> (String, bool) {
     let mut segs = Vec::new();
-    for seg in raw.split('/') {
+    let mut unnamed = false;
+    for seg in split_segments(raw) {
         if seg.is_empty() {
             continue;
         }
-        segs.push(normalize_segment(seg));
+        segs.push(normalize_segment(seg, &mut unnamed));
     }
-    if segs.is_empty() {
+    let path = if segs.is_empty() {
         "/".to_string()
     } else {
         format!("/{}", segs.join("/"))
+    };
+    (path, unnamed)
+}
+
+/// Split on `/`, except inside `{...}` (Hono regex constraints such as
+/// `:id{[^/]+}` may contain slashes).
+fn split_segments(raw: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, c) in raw.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '/' if depth == 0 => {
+                out.push(&raw[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&raw[start..]);
+    out
+}
+
+fn param(name: &str, unnamed: &mut bool) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        *unnamed = true;
+        format!("{{{}}}", UNNAMED_PARAM)
+    } else {
+        format!("{{{}}}", name)
     }
 }
 
-fn normalize_segment(seg: &str) -> String {
+fn normalize_segment(seg: &str, unnamed: &mut bool) -> String {
     if let Some(name) = seg.strip_prefix(':') {
         let name = name.trim_end_matches('?');
         // Hono allows regex constraints: `:id{[0-9]+}`
         let name = name.split('{').next().unwrap_or(name);
-        return format!("{{{}}}", name);
+        return param(name, unnamed);
     }
     if seg.starts_with('[') && seg.ends_with(']') {
         let inner = seg.trim_start_matches('[').trim_end_matches(']');
         let inner = inner.trim_start_matches("...");
-        return format!("{{{}}}", inner);
+        return param(inner, unnamed);
     }
     if seg.starts_with('{') && seg.ends_with('}') {
         let inner = &seg[1..seg.len() - 1];
-        let name = inner.split([':', '.']).next().unwrap_or(inner);
-        return format!("{{{}}}", name);
+        // `{id:[0-9]+}`, `{id...}`; a stray `{:id}` keeps the name after the colon.
+        let name = match inner.strip_prefix(':') {
+            Some(rest) if rest.starts_with(|c: char| c.is_alphabetic() || c == '_') => {
+                rest.split([':', '.', '{', '?']).next().unwrap_or("")
+            }
+            Some(_) => "",
+            None => inner.split([':', '.', '{']).next().unwrap_or(inner),
+        };
+        return param(name, unnamed);
     }
     if seg == "*" {
         return "{wildcard}".to_string();
@@ -237,5 +286,41 @@ mod tests {
         assert_eq!(path_params("/a/{x}/b/{y}"), vec!["x", "y"]);
         assert_eq!(slug("メール重複は409"), "メール重複は409");
         assert_eq!(slug("Creates a user!"), "creates-a-user");
+    }
+
+    #[test]
+    fn never_emits_empty_param() {
+        for raw in [
+            "/b/:",
+            "/b/:?",
+            "/b/:{[0-9]+}",
+            "/b/{}",
+            "/b/{...}",
+            "/b/{:[0-9]+}",
+            "/b/[]",
+            "/b/[...]",
+        ] {
+            let (p, unnamed) = normalize_path_checked(raw);
+            assert_eq!(p, "/b/{param}", "{}", raw);
+            assert!(unnamed, "{}", raw);
+        }
+    }
+
+    #[test]
+    fn named_params_are_not_flagged() {
+        for (raw, want) in [
+            ("/b/:bannerId", "/b/{bannerId}"),
+            ("/b/:bannerId?", "/b/{bannerId}"),
+            ("/b/:id{[0-9]+}/x", "/b/{id}/x"),
+            ("/b/:id{[^/]+}", "/b/{id}"),
+            ("/b/:id{[^/]+}/x", "/b/{id}/x"),
+            ("/b/{:id}", "/b/{id}"),
+            ("/b/{id}", "/b/{id}"),
+            ("/b/{id:[0-9]+}", "/b/{id}"),
+        ] {
+            let (p, unnamed) = normalize_path_checked(raw);
+            assert_eq!(p, want, "{}", raw);
+            assert!(!unnamed, "{}", raw);
+        }
     }
 }

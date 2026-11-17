@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- Hono scan: `.openapi(routes.list, handler)` now resolves `createRoute` objects grouped in a const object literal (local or imported through named, default, namespace imports and re-exports; `obj.prop`, `obj["prop"]`, nested `a.b.c`, shorthand properties, inline `createRoute({...})` values, `as const` / `satisfies` wrappers), so these routes keep their mount prefix instead of falling back to the orphan path.
+- Hono / Express scan: a `.on()` / `.get()` / ... registration whose handlers are all call expressions (`adminChecker("X")`) and whose paths are all registered by another registration on the same router is treated as middleware and no longer produces routes (the methods x paths cross product). Call-only handlers on paths nothing else registers (`app.get("/reference", apiReference(...))`) are still routes.
+- `normalize_path` never emits an empty `{}` parameter any more: a parameter without a recoverable name (`/:`, `/:{regex}`, `/{...}`, `/[]`) becomes `{param}` and scan warns with the raw path. Hono regex params containing `/` (`:id{[^/]+}`) are no longer split, and array paths with elements that are not statically known now warn instead of being dropped silently.
+
 ## [0.1.1] - 2026-11-17
 
 ### Fixed

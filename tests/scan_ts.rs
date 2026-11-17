@@ -274,7 +274,14 @@ fn hono_openapi_factories_createroute_and_openapi_chains() {
         lines(&r),
         vec![
             "GET /api src/routes/root/root.index.ts:6",
-            "GET /api/admin/stats src/router/admin.ts:5",
+            "GET /api/admin/grades src/router/admin.ts:31",
+            "GET /api/admin/ping src/router/admin.ts:32",
+            "GET /api/admin/stats src/router/admin.ts:15",
+            "GET /api/admin/students src/router/admin.ts:27",
+            "POST /api/admin/students src/router/admin.ts:29",
+            "GET /api/admin/students/export src/router/admin.ts:33",
+            "GET /api/admin/students/{studentId} src/router/admin.ts:28",
+            "PATCH /api/admin/students/{studentId} src/router/admin.ts:30",
             "GET /api/health src/router/index.ts:5",
             "GET /api/users src/routes/users/users.index.ts:7",
             "POST /api/users src/routes/users/users.index.ts:8",
@@ -290,6 +297,22 @@ fn hono_openapi_factories_createroute_and_openapi_chains() {
         ]
     );
     assert!(r.endpoints.iter().all(|e| e.source.framework == "hono"));
+    // Object-literal route groups resolve (no unresolved warning, no orphans
+    // without the mount prefix); `.on()` middleware and `.use()` emit nothing.
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| w.contains("could not be resolved")),
+        "{:?}",
+        r.warnings
+    );
+    assert!(
+        !r.endpoints
+            .iter()
+            .any(|e| e.path.starts_with("/students") || e.path.contains("{}")),
+        "{:?}",
+        lines(&r)
+    );
     // The orphan createRoute() is reported, not silently emitted.
     assert!(
         r.warnings
@@ -422,6 +445,186 @@ fn hono_factory_variants_and_mount_patterns() {
             "GET /x/loop/pre/a src/routers/a.ts:4",
             "GET /x/ns/pre/a src/routers/a.ts:4",
         ],
+        "{:?}",
+        r.warnings
+    );
+}
+
+fn scan_sources(fw: &str, files: &[(&str, &str)]) -> ScanReport {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        let dest = dir.path().join(name);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(dest, text).unwrap();
+    }
+    scan_project(
+        &project(dir.path(), fw),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn method_paths(r: &ScanReport) -> Vec<String> {
+    r.endpoints
+        .iter()
+        .map(|e| format!("{} {}", e.method, e.path))
+        .collect()
+}
+
+#[test]
+fn hono_on_with_only_call_handlers_is_middleware_when_paths_are_registered_elsewhere() {
+    let r = scan_sources(
+        "hono",
+        &[(
+            "app.ts",
+            r#"import { Hono } from "hono";
+const app = new Hono();
+app.on(["POST", "PATCH"], ["/b", "/b/:id"], auth("X"));
+app.post("/b", create);
+app.patch("/b/:bid", update);
+app.get("/reference", apiReference({}));
+app.get("/open", zValidator("json", s));
+app.get("/x", auth("a"));
+app.get("/x", (c) => c.json({}));
+app.on(["GET"], ["/b", "/nowhere"], auth("Z"));
+app.use("/b/*", auth("Y"));
+"#,
+        )],
+    );
+    let mut got = method_paths(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "GET /b",
+            "GET /nowhere",
+            "GET /open",
+            "GET /reference",
+            "GET /x",
+            "PATCH /b/{bid}",
+            "POST /b",
+        ],
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn express_call_only_registration_is_middleware_when_path_is_registered_elsewhere() {
+    let r = scan_sources(
+        "express",
+        &[(
+            "app.js",
+            r#"const express = require("express");
+const app = express();
+app.get("/x", auth());
+app.get("/x", ctrl.list);
+app.get("/only-mw", auth());
+"#,
+        )],
+    );
+    let mut got = method_paths(&r);
+    got.sort();
+    assert_eq!(got, vec!["GET /only-mw", "GET /x"]);
+}
+
+#[test]
+fn hono_unnamed_path_params_become_param_with_warning() {
+    let r = scan_sources(
+        "hono",
+        &[(
+            "app.ts",
+            r#"import { Hono } from "hono";
+const app = new Hono();
+const NAME = ":bannerId";
+app.on(["POST"], ["/banners/:", `/by-const/${NAME}`, `/unknown/${process.env.X}`], h);
+app.get("/f/:{[0-9]+}", h);
+app.get("/g/:id{[^/]+}/x", h);
+app.get("/h/:id?", h);
+app.get("/i/:id{[0-9]+}", h);
+"#,
+        )],
+    );
+    let mut got = method_paths(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "GET /f/{param}",
+            "GET /g/{id}/x",
+            "GET /h/{id}",
+            "GET /i/{id}",
+            "POST /banners/{param}",
+            "POST /by-const/{bannerId}",
+        ],
+        "{:?}",
+        r.warnings
+    );
+    assert!(r.endpoints.iter().all(|e| !e.path.contains("{}")));
+    for raw in ["raw path: `/banners/:`", "raw path: `/f/:{[0-9]+}`"] {
+        assert!(
+            r.warnings.iter().any(|w| w.contains(raw)),
+            "{} in {:?}",
+            raw,
+            r.warnings
+        );
+    }
+    // The template with an unknown substitution inside the array is reported.
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("some paths in the array are not statically known")),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_route_objects_default_import_aliases_and_nested_props() {
+    let r = scan_sources(
+        "hono",
+        &[
+            (
+                "routes.ts",
+                r#"import { createRoute } from "@hono/zod-openapi";
+const a = createRoute({ method: "get", path: "/a" });
+const b = createRoute({ method: "get", path: "/b" });
+const group = { a, nested: { b, c: createRoute({ method: "post", path: "/c" }) } } as const;
+export default group;
+export const alias = group.nested;
+"#,
+            ),
+            (
+                "app.ts",
+                r#"import { OpenAPIHono } from "@hono/zod-openapi";
+import group, { alias } from "./routes";
+import * as ns from "./routes";
+const api = new OpenAPIHono()
+  .openapi(group.a, h)
+  .openapi(group["nested"]["b"], h)
+  .openapi(alias.c, h)
+  .openapi(ns.default.a, h);
+const app = new OpenAPIHono();
+app.route("/api", api);
+"#,
+            ),
+        ],
+    );
+    let mut got = method_paths(&r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["GET /api/a", "GET /api/b", "POST /api/c"],
+        "{:?}",
+        r.warnings
+    );
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| w.contains("could not be resolved")),
         "{:?}",
         r.warnings
     );

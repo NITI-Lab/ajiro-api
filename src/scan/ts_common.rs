@@ -330,6 +330,11 @@ struct Reg {
     line: u32,
     handler: Option<String>,
     query: Vec<String>,
+    /// Identifies the registration call (shared by all its method x path regs).
+    call: usize,
+    /// Every handler argument is a call expression (`auth("x")`): see
+    /// `drop_middleware_regs`.
+    mw: bool,
 }
 
 #[derive(Default)]
@@ -447,6 +452,80 @@ fn route_def_raw(call: Node, src: &str, ext: bool) -> Option<RouteDef> {
     })
 }
 
+/// A value that can lead to a `createRoute()` definition: a reference
+/// (`a`, `a.b`, `a["b"].c`), an inline `createRoute({...})` call, or an
+/// object literal grouping them.
+#[derive(Clone)]
+enum RNode {
+    Chain(String, Vec<String>),
+    Def(RouteDef),
+    Obj(Vec<(String, RNode)>),
+}
+
+/// `a`, `a.b`, `a["b"].c` as `(base identifier, property names)`.
+fn expr_chain(n: Node, src: &str) -> Option<(String, Vec<String>)> {
+    let n = unwrap(n);
+    match n.kind() {
+        "identifier" => Some((txt(n, src).to_string(), vec![])),
+        "member_expression" => {
+            let (b, mut p) = expr_chain(n.child_by_field_name("object")?, src)?;
+            p.push(txt(n.child_by_field_name("property")?, src).to_string());
+            Some((b, p))
+        }
+        "subscript_expression" => {
+            let (b, mut p) = expr_chain(n.child_by_field_name("object")?, src)?;
+            p.push(str_lit(n.child_by_field_name("index")?, src)?);
+            Some((b, p))
+        }
+        _ => None,
+    }
+}
+
+fn route_node(n: Node, src: &str, ext: bool) -> Option<RNode> {
+    let n = unwrap(n);
+    match n.kind() {
+        "call_expression" => route_def_raw(n, src, ext).map(RNode::Def),
+        "object" => {
+            let mut entries = Vec::new();
+            let mut c = n.walk();
+            for ch in n.named_children(&mut c) {
+                match ch.kind() {
+                    "pair" => {
+                        let (Some(k), Some(v)) = (
+                            ch.child_by_field_name("key"),
+                            ch.child_by_field_name("value"),
+                        ) else {
+                            continue;
+                        };
+                        if k.kind() == "computed_property_name" {
+                            continue;
+                        }
+                        let key = txt(k, src)
+                            .trim_matches(|c| c == '"' || c == '\'')
+                            .to_string();
+                        if let Some(node) = route_node(v, src, ext) {
+                            entries.push((key, node));
+                        }
+                    }
+                    "shorthand_property_identifier" => {
+                        let nm = txt(ch, src).to_string();
+                        entries.push((nm.clone(), RNode::Chain(nm, vec![])));
+                    }
+                    _ => {}
+                }
+            }
+            (!entries.is_empty()).then_some(RNode::Obj(entries))
+        }
+        _ => expr_chain(n, src).map(|(b, p)| RNode::Chain(b, p)),
+    }
+}
+
+/// Result of resolving a route reference.
+enum Found<'r> {
+    Def(usize, &'r RouteDef),
+    Obj(usize, &'r [(String, RNode)]),
+}
+
 /// `(module, Some([(exported, imported)]))`, or `(module, None)` for `export *`.
 type ReExport = (String, Option<Vec<(String, String)>>);
 
@@ -463,6 +542,8 @@ struct FileDecl {
     reexports: Vec<ReExport>,
     consts: HashMap<String, Val>,
     route_defs: HashMap<String, RouteDef>,
+    /// Object literals (and aliases) that group route definitions.
+    route_nodes: HashMap<String, RNode>,
     all_defs: Vec<RouteDef>,
     type_aliases: Vec<String>,
 }
@@ -489,6 +570,10 @@ fn decl_walk(n: Node, src: &str, ext: bool, d: &mut FileDecl) {
                 if ext {
                     if let Some(rd) = route_def_raw(unwrap(v), src, ext) {
                         d.route_defs.insert(nm, rd);
+                    } else if let Some(node @ (RNode::Obj(_) | RNode::Chain(..))) =
+                        route_node(v, src, ext)
+                    {
+                        d.route_nodes.insert(nm, node);
                     }
                 }
             }
@@ -810,6 +895,66 @@ impl<'a> Resolver<'a> {
         self.export_in(fj, imp, 0)
     }
 
+    /// Look `name` up in file `fi` as a route definition or a route object,
+    /// following imports and aliases.
+    fn lookup_route(&self, fi: usize, name: &str, depth: u8) -> Option<Found<'a>> {
+        if depth > 8 {
+            return None;
+        }
+        let d = &self.decls[fi];
+        if let Some(rd) = d.route_defs.get(name) {
+            return Some(Found::Def(fi, rd));
+        }
+        match d.route_nodes.get(name) {
+            Some(RNode::Obj(o)) => return Some(Found::Obj(fi, o)),
+            Some(RNode::Chain(b, p)) => return self.follow_route(fi, b, p, depth + 1),
+            _ => {}
+        }
+        let (spec, imp) = d.imports.get(name)?;
+        if imp == "*" {
+            return None;
+        }
+        let (fj, local) = self.resolve_import(fi, spec, imp)?;
+        self.lookup_route(fj, &local, depth + 1)
+    }
+
+    /// Resolve `base.p0.p1...` as seen from file `fi`.
+    fn follow_route(
+        &self,
+        fi: usize,
+        base: &str,
+        props: &[String],
+        depth: u8,
+    ) -> Option<Found<'a>> {
+        if depth > 8 {
+            return None;
+        }
+        if let Some((spec, imp)) = self.decls[fi].imports.get(base) {
+            if imp == "*" {
+                let (first, rest) = props.split_first()?;
+                let fj = self.module(fi, spec)?;
+                let (fk, local) = self.export_in(fj, first, 0)?;
+                let f = self.lookup_route(fk, &local, depth + 1)?;
+                return self.descend_route(f, rest, depth + 1);
+            }
+        }
+        let f = self.lookup_route(fi, base, depth + 1)?;
+        self.descend_route(f, props, depth + 1)
+    }
+
+    fn descend_route(&self, f: Found<'a>, props: &[String], depth: u8) -> Option<Found<'a>> {
+        let mut cur = f;
+        for p in props {
+            let Found::Obj(fi, o) = cur else { return None };
+            cur = match &o.iter().find(|(k, _)| k == p)?.1 {
+                RNode::Def(d) => Found::Def(fi, d),
+                RNode::Obj(o2) => Found::Obj(fi, o2),
+                RNode::Chain(b, pp) => self.follow_route(fi, b, pp, depth + 1)?,
+            };
+        }
+        Some(cur)
+    }
+
     fn is_factory_callee(&self, fi: usize, name: &str) -> bool {
         if self.factories.contains(&(fi, name.to_string())) {
             return true;
@@ -1096,36 +1241,18 @@ impl<'a> Builder<'a> {
     }
 
     /// Resolve a route reference (`createRoute(...)`, a variable, a named
-    /// import or `ns.name`) to its definition and defining file.
+    /// import, `ns.name`, or a property path into a const object literal)
+    /// to its definition and defining file.
     fn route_def_ref(&self, n: Node<'a>) -> Option<(usize, RouteDef)> {
         let u = unwrap(n);
-        let decls = self.res.decls;
-        match u.kind() {
-            "identifier" => {
-                let name = self.t(u);
-                if let Some(d) = decls[self.fi].route_defs.get(name) {
-                    return Some((self.fi, d.clone()));
-                }
-                let (spec, imp) = self.g.imports.get(name)?;
-                let (fj, local) = self.res.resolve_import(self.fi, spec, imp)?;
-                decls[fj].route_defs.get(&local).map(|d| (fj, d.clone()))
-            }
-            "member_expression" => {
-                let obj = unwrap(u.child_by_field_name("object")?);
-                let prop = self.t(u.child_by_field_name("property")?);
-                if obj.kind() != "identifier" {
-                    return None;
-                }
-                let (spec, imp) = self.g.imports.get(self.t(obj))?;
-                if imp != "*" {
-                    return None;
-                }
-                let fj = self.res.module(self.fi, spec)?;
-                let (fk, local) = self.res.export_in(fj, prop, 0)?;
-                decls[fk].route_defs.get(&local).map(|d| (fk, d.clone()))
-            }
-            "call_expression" => route_def_raw(u, self.src, self.res.ext).map(|d| (self.fi, d)),
-            _ => None,
+        if u.kind() == "call_expression" {
+            return route_def_raw(u, self.src, self.res.ext).map(|d| (self.fi, d));
+        }
+        // `name`, `ns.name`, `obj.prop`, `obj["prop"]`, `a.b.c`, local or imported.
+        let (base, props) = expr_chain(u, self.src)?;
+        match self.res.follow_route(self.fi, &base, &props, 0)? {
+            Found::Def(f, d) => Some((f, d.clone())),
+            Found::Obj(..) => None,
         }
     }
 
@@ -1562,14 +1689,21 @@ impl<'a> Builder<'a> {
         Some(nm)
     }
 
-    fn path_list(&self, n: Node<'a>) -> Option<Vec<String>> {
+    fn path_list(&mut self, n: Node<'a>) -> Option<Vec<String>> {
         let u = unwrap(n);
         if u.kind() == "array" {
             let mut c = u.walk();
-            let v: Vec<String> = u
+            let elems: Vec<Node<'a>> = u
                 .named_children(&mut c)
-                .filter_map(|e| self.str_of(e))
+                .filter(|e| e.kind() != "comment")
                 .collect();
+            let v: Vec<String> = elems.iter().filter_map(|e| self.str_of(*e)).collect();
+            if v.len() < elems.len() {
+                self.warn(
+                    line_of(u),
+                    "some paths in the array are not statically known; those were skipped",
+                );
+            }
             return (!v.is_empty()).then_some(v);
         }
         self.str_of(u).map(|s| vec![s])
@@ -1676,6 +1810,8 @@ impl<'a> Builder<'a> {
                     line,
                     handler,
                     query,
+                    call: n.start_byte(),
+                    mw: false,
                 });
             }
             "doc" | "doc31" if self.flavor == Flavor::Hono => {
@@ -1693,6 +1829,8 @@ impl<'a> Builder<'a> {
                     line,
                     handler: None,
                     query: vec![],
+                    call: n.start_byte(),
+                    mw: false,
                 });
             }
             "route" if args.len() >= 2 => {
@@ -1788,6 +1926,10 @@ impl<'a> Builder<'a> {
                 }
             }
         };
+        let mw = !handlers.is_empty()
+            && handlers
+                .iter()
+                .all(|a| unwrap(*a).kind() == "call_expression");
         let handler = handlers
             .last()
             .filter(|a| matches!(a.kind(), "identifier" | "member_expression"))
@@ -1812,6 +1954,8 @@ impl<'a> Builder<'a> {
                     line,
                     handler: handler.clone(),
                     query: query.clone(),
+                    call: obj.end_byte(),
+                    mw,
                 });
             }
         }
@@ -1833,6 +1977,52 @@ fn clean_path(raw: &str, flavor: Flavor) -> String {
         return re.replace_all(raw, ":$1").into_owned();
     }
     raw.to_string()
+}
+
+fn unnamed_param_warning(file: &str, line: u32, raw: &str) -> String {
+    format!(
+        "{}:{}: path parameter without a recoverable name emitted as `{{{}}}` (raw path: `{}`); please report this pattern",
+        file,
+        line,
+        naming::UNNAMED_PARAM,
+        raw
+    )
+}
+
+/// Comparison key of a registered path: normalized, parameter names erased.
+fn path_key(raw: &str, flavor: Flavor) -> String {
+    naming::normalize_path(&clean_path(raw, flavor))
+        .split('/')
+        .map(|s| if s.starts_with('{') { "{}" } else { s })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Hono (and Express) cannot tell middleware from handlers syntactically.
+/// Rule: a registration (`.on`, `.get`, ..., `.all`) whose handler arguments
+/// are ALL call expressions (`adminChecker("X")`, `zValidator(...)`; no
+/// identifier, arrow or function handler) and every one of whose paths is
+/// also registered by some OTHER registration of the same router instance
+/// that is not of that kind (any method, normalized paths compared, param
+/// names ignored) is middleware and emits no routes. A call-expression
+/// handler on a path nothing else registers, such as
+/// `app.get("/reference", apiReference({...}))`, stays a route.
+fn drop_middleware_regs(g: &mut FileGraph, flavor: Flavor) {
+    let mut real: HashMap<&str, HashSet<String>> = HashMap::new();
+    for r in g.regs.iter().filter(|r| !r.mw) {
+        real.entry(r.inst.as_str())
+            .or_default()
+            .insert(path_key(&r.path, flavor));
+    }
+    let mut covered: HashMap<(String, usize), bool> = HashMap::new();
+    for r in g.regs.iter().filter(|r| r.mw) {
+        let ok = real
+            .get(r.inst.as_str())
+            .is_some_and(|set| set.contains(&path_key(&r.path, flavor)));
+        *covered.entry((r.inst.clone(), r.call)).or_insert(true) &= ok;
+    }
+    g.regs
+        .retain(|r| !(r.mw && covered[&(r.inst.clone(), r.call)]));
 }
 
 struct Entry {
@@ -2061,6 +2251,7 @@ pub fn scan_graphs(
         }
         warnings.extend(b.warnings);
         used.extend(b.used);
+        drop_middleware_regs(&mut b.g, flavor);
         graphs.push(b.g);
     }
 
@@ -2155,11 +2346,16 @@ pub fn scan_graphs(
         stack: &mut Vec<Node2>,
         flavor: Flavor,
         out: &mut Vec<Route>,
+        warnings: &mut Vec<String>,
     ) {
         let g = &graphs[node.0];
         let base = format!("{}/{}", prefix, g.insts[&node.1].base);
         for r in g.regs.iter().filter(|r| r.inst == node.1) {
-            let full = naming::normalize_path(&clean_path(&format!("{}/{}", base, r.path), flavor));
+            let raw = clean_path(&format!("{}/{}", base, r.path), flavor);
+            let (full, unnamed) = naming::normalize_path_checked(&raw);
+            if unnamed {
+                warnings.push(unnamed_param_warning(&g.rel, r.line, &r.path));
+            }
             out.push(Route {
                 method: r.method.clone(),
                 path: full,
@@ -2184,6 +2380,7 @@ pub fn scan_graphs(
                     stack,
                     flavor,
                     out,
+                    warnings,
                 );
             }
         }
@@ -2201,6 +2398,7 @@ pub fn scan_graphs(
                     &mut Vec::new(),
                     flavor,
                     &mut out,
+                    &mut warnings,
                 );
             }
         }
@@ -2218,9 +2416,13 @@ pub fn scan_graphs(
                 let method = res.eval(&def.method, fi).map(|m| m.to_ascii_uppercase());
                 match (method, res.eval(&def.path, fi)) {
                     (Some(m), Some(p)) if HTTP_METHODS.contains(&m.as_str()) => {
+                        let (path, unnamed) = naming::normalize_path_checked(&p);
+                        if unnamed {
+                            warnings.push(unnamed_param_warning(&d.rel, def.line, &p));
+                        }
                         out.push(Route {
                             method: m,
-                            path: naming::normalize_path(&p),
+                            path,
                             file: d.rel.clone(),
                             line: def.line,
                             handler: None,

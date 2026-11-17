@@ -49,6 +49,12 @@ ajiro-api scan [OPTIONS] [PATHS]...
 | `--check` | YAMLが古ければ終了コード1（CI向け）。何も書き込まない |
 | `--json` | 機械向け出力 |
 
+### Hono / Express のミドルウェア判定
+
+Hono はミドルウェアとハンドラーを構文だけでは区別できないため、次のルールで判定します。`.on` / `.get` / `.post` ... / `.all` の登録で、ハンドラー引数がすべて呼び出し式（`adminChecker("X")`、`zValidator(...)` など。識別子・アロー関数・関数式のハンドラーを含まない）であり、かつそのパスのすべてが同じルーターインスタンス（同一ファイル内）の別の登録（上記に当てはまらないもの。メソッドは問わず、正規化したパスで比較し、パラメータ名は無視）でも登録されている場合、その登録はミドルウェアとみなしてルートを出力しません。`app.get("/reference", apiReference({...}))` のように他に同じパスの登録がなければルートのままです。`app.use(...)` はルートを出力しません。Express にも同じルールを適用します。
+
+パスのパラメータ名を復元できない場合（`/banners/:`、`/x/:{[0-9]+}` など）は `{}` ではなく `{param}` とし、元のパス文字列を含む警告を出します。
+
 `--json` の主な項目: `framework`、`endpoints[]`（`id` `method` `path` `file` `source` `status`＝`created`/`updated`/`unchanged`）、`created`、`updated`、`unchanged`、`stale`、`warnings`、`duration_ms`。
 
 ## test
