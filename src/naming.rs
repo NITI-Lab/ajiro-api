@@ -119,16 +119,30 @@ fn is_prefix_segment(seg: &str) -> bool {
 }
 
 /// Static (non-parameter) segments, without `api` / `v1`-style prefixes.
+///
+/// A path made only of parameters after the prefix (a catch-all such as
+/// `/api/v1/{resource}/{id}`) has no static segment; it falls back to the
+/// parameter names so that `GET /{resource}` and `GET /{resource}/{id}` get
+/// distinct, readable names instead of `root.get` and `root.get-2`.
 fn meaningful_segments(path: &str) -> Vec<String> {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut start = 0;
     while start < segs.len() && is_prefix_segment(segs[start]) {
         start += 1;
     }
-    segs[start..]
+    let statics: Vec<String> = segs[start..]
         .iter()
         .filter(|s| !is_param(s))
         .map(|s| sanitize(s))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !statics.is_empty() {
+        return statics;
+    }
+    segs[start..]
+        .iter()
+        .filter(|s| is_param(s))
+        .map(|s| sanitize(&s[1..s.len() - 1]))
         .filter(|s| !s.is_empty())
         .collect()
 }
@@ -283,6 +297,21 @@ mod tests {
         assert_eq!(endpoint_id("GET", "/api/users/{id}"), "users.get");
         assert_eq!(endpoint_id("GET", "/users/{id}/posts"), "users.posts.list");
         assert_eq!(endpoint_id("POST", "/auth/login"), "auth.login.create");
+        // catch-all routes made only of parameters
+        assert_eq!(endpoint_id("GET", "/api/v1/{resource}"), "resource.get");
+        assert_eq!(
+            endpoint_id("GET", "/api/v1/{resource}/{id}"),
+            "resource.id.get"
+        );
+        assert_eq!(
+            endpoint_id("PATCH", "/api/v1/{resource}/{id}"),
+            "resource.id.update"
+        );
+        assert_eq!(
+            endpoint_rel_path("GET", "/api/v1/{resource}/{id}"),
+            Path::new("resource/get-api-v1-resource-id.yaml")
+        );
+        assert_eq!(endpoint_id("GET", "/api/v1"), "root.list");
         assert_eq!(path_params("/a/{x}/b/{y}"), vec!["x", "y"]);
         assert_eq!(slug("メール重複は409"), "メール重複は409");
         assert_eq!(slug("Creates a user!"), "creates-a-user");

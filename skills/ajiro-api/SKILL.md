@@ -54,7 +54,7 @@ After implementing or changing endpoints:
 - **Do not weaken assertions just to get green.** Do not delete failing tests, loosen status checks, or add `skip: true` to hide a real bug. If a test is wrong, fix it to express the intended behaviour.
 - **Update snapshots only when the change is intended**: `ajiro-api test -u` overwrites stored snapshots. Review the diff of `api/__snapshots__/` before committing.
 - Tests that create data should use unique values (`{{ $randomEmail }}`, `{{ $uuid }}`) so re-runs do not collide.
-- An endpoint with empty `tests` only gets an implicit `smoke` test (status < 500), and only for GET/HEAD/OPTIONS: POST/PUT/PATCH/DELETE are skipped unless `--smoke-unsafe`. That is not enough for new work.
+- An endpoint with empty `tests` only gets an implicit `smoke` test (status < 500; a 4xx passes with a `warnings` entry — a 401/403 there means the run is not logged in, so fix `setup`/`headers` first), and only for GET/HEAD/OPTIONS: POST/PUT/PATCH/DELETE are skipped unless `--smoke-unsafe`. That is not enough for new work.
 - **When most endpoints need a login**, put the login endpoint in the environment `setup` and send the captured token or cookie (`cookie:<name>` capture) through the environment `headers`, instead of adding `depends_on` to every file.
 
 ## 3. Other commands
@@ -63,7 +63,7 @@ After implementing or changing endpoints:
 | --- | --- |
 | `ajiro-api list --json` | Endpoints, ids, test counts, source locations |
 | `ajiro-api schema endpoint` / `schema config` | JSON Schema of the YAML files (check syntax) |
-| `ajiro-api scan --check` | CI: exit 1 if YAML is out of date |
+| `ajiro-api scan --check` | CI: exit 1 if YAML is out of date (`--ignore-lines`: not when routes only moved) |
 | `ajiro-api test --env ci --junit report.xml` | CI run with JUnit output |
 | `ajiro-api mock` | Serve `mock:` responses on port 4010 (scenarios: `--scenario`, `X-Ajiro-Scenario` header, `?__scenario=`) |
 | `ajiro-api openapi export -o openapi.yaml` / `openapi import <file>` | OpenAPI 3.x conversion |

@@ -1048,6 +1048,54 @@ fn load_errors_make_report_not_ok() {
 }
 
 #[test]
+fn smoke_4xx_passes_with_a_warning() {
+    let fx = Fx::new(&[
+        (
+            "a/get-items.yaml",
+            "version: 1\nid: a.items\nrequest: { method: GET, path: /items }\n",
+        ),
+        (
+            "a/get-me.yaml",
+            "version: 1\nid: a.me\nrequest: { method: GET, path: /me }\n",
+        ),
+        (
+            "a/get-missing.yaml",
+            "version: 1\nid: a.missing\nrequest: { method: GET, path: /users/999 }\n",
+        ),
+    ]);
+    let r = fx.run();
+    assert!(r.ok);
+    let items = find(&r, "a.items", "smoke");
+    assert!(items.warnings.is_empty(), "{:?}", items.warnings);
+    let me = find(&r, "a.me", "smoke");
+    assert_eq!(me.status, TestStatus::Passed);
+    assert_eq!(me.warnings.len(), 1);
+    assert!(me.warnings[0].contains("status 401"), "{}", me.warnings[0]);
+    assert!(
+        me.warnings[0].contains("environments.local.setup"),
+        "{}",
+        me.warnings[0]
+    );
+    let missing = find(&r, "a.missing", "smoke");
+    assert_eq!(missing.status, TestStatus::Passed);
+    assert!(
+        missing.warnings[0].contains("add tests to api/a/get-missing.yaml"),
+        "{}",
+        missing.warnings[0]
+    );
+    assert_eq!(r.summary.warnings, 2);
+
+    let json = serde_json::to_value(&r).unwrap();
+    let items_json = json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["endpoint_id"] == "a.items")
+        .unwrap();
+    assert!(items_json.get("warnings").is_none(), "omitted when empty");
+}
+
+#[test]
 fn smoke_skips_unsafe_methods_unless_asked() {
     let fx = Fx::new(&[
         (

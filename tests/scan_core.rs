@@ -43,6 +43,7 @@ fn scan_args(check: bool) -> ScanArgs {
         framework: None,
         dry_run: false,
         check,
+        ignore_lines: false,
         json: false,
     }
 }
@@ -228,6 +229,42 @@ fn check_and_dry_run_write_nothing() {
     .unwrap();
     assert_eq!(r.updated, 3);
     assert!(read(dir.path(), "api/users/post-users.yaml").contains("  line: 5\n"));
+}
+
+#[test]
+fn check_ignore_lines_tolerates_moved_routes_only() {
+    let dir = hono_project();
+    assert_eq!(run_cli(dir.path(), &scan_args(false)).unwrap(), 0);
+    let ignore = ScanArgs {
+        ignore_lines: true,
+        ..scan_args(true)
+    };
+    // an edit above the routes shifts every line: reported, but not drift
+    write(dir.path(), "src/index.ts", &format!("// c\n{}", INDEX));
+    let r = scan(dir.path(), true);
+    assert_eq!((r.updated, r.line_only), (3, 3));
+    assert!(r.endpoints.iter().all(|e| e.line_only));
+    assert_eq!(run_cli(dir.path(), &scan_args(true)).unwrap(), 1);
+    assert_eq!(run_cli(dir.path(), &ignore).unwrap(), 0);
+    // a changed handler is still drift
+    write(
+        dir.path(),
+        "src/index.ts",
+        &format!("// c\n{}", INDEX.replace("getUser", "showUser")),
+    );
+    let r = scan(dir.path(), true);
+    assert_eq!((r.updated, r.line_only), (3, 2));
+    assert_eq!(run_cli(dir.path(), &ignore).unwrap(), 1);
+    // a new route is still drift
+    write(
+        dir.path(),
+        "src/index.ts",
+        &format!(
+            "// c\n{}",
+            INDEX.replace("export", "app.delete('/users/:id', del);\nexport")
+        ),
+    );
+    assert_eq!(run_cli(dir.path(), &ignore).unwrap(), 1);
 }
 
 #[test]

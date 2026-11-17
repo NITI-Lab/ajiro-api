@@ -48,7 +48,7 @@ mock: {}
 | `depends_on` | 文字列の配列 | いいえ | 先に実行するエンドポイントの `id`。存在しない `id` は `validate` がエラーにする |
 | `request` | オブジェクト | はい | 基本のリクエスト |
 | `source` | オブジェクト | いいえ | `scan` が書く。**手で編集しない** |
-| `tests` | 配列 | いいえ | テストケース。人とAIが書く。`scan` は触らない。空なら暗黙の `smoke` テスト（ステータス500未満）を実行。ただし `smoke` を送るのは GET・HEAD・OPTIONS だけで、POST・PUT・PATCH・DELETE はデータを変えうるので送らずにスキップする（`test --smoke-unsafe` で送る） |
+| `tests` | 配列 | いいえ | テストケース。人とAIが書く。`scan` は触らない。空なら暗黙の `smoke` テスト（ステータス500未満。4xx は成功扱いで警告を出す）を実行。ただし `smoke` を送るのは GET・HEAD・OPTIONS だけで、POST・PUT・PATCH・DELETE はデータを変えうるので送らずにスキップする（`test --smoke-unsafe` で送る） |
 | `mock` | オブジェクト | いいえ | `ajiro-api mock` が返すサンプルレスポンス |
 
 ### `request`

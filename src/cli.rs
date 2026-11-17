@@ -82,6 +82,9 @@ pub struct ScanArgs {
     /// Exit with code 1 if YAML files are out of date (for CI); writes nothing
     #[arg(long)]
     pub check: bool,
+    /// With --check: do not count files whose only change is `source.line` as drift
+    #[arg(long, requires = "check")]
+    pub ignore_lines: bool,
     /// Machine-readable output
     #[arg(long)]
     pub json: bool,

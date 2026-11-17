@@ -345,6 +345,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     let mut matched: HashSet<usize> = HashSet::new();
     let mut entries = Vec::new();
     let (mut created, mut updated, mut unchanged) = (0, 0, 0);
+    let mut line_only_count = 0;
     let write = !(opts.dry_run || opts.check);
 
     for route in &routes {
@@ -363,6 +364,13 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
             matched.insert(idx);
             let e = &existing[idx];
             let mut status = ScanStatus::Unchanged;
+            let line_only = e.def.source.as_ref().is_some_and(|old| {
+                old.line != source.line
+                    && SourceInfo {
+                        line: source.line,
+                        ..old.clone()
+                    } == source
+            });
             if e.def.source.as_ref() != Some(&source) {
                 let text = std::fs::read_to_string(&e.path)
                     .with_context(|| format!("cannot read {}", e.rel_path))?;
@@ -381,9 +389,13 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                     )),
                 }
             }
+            let line_only = line_only && status == ScanStatus::Updated;
             match status {
                 ScanStatus::Updated => updated += 1,
                 _ => unchanged += 1,
+            }
+            if line_only {
+                line_only_count += 1;
             }
             entries.push(ScanEntry {
                 id: e.def.id.clone(),
@@ -392,6 +404,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                 file: e.rel_path.clone(),
                 source,
                 status,
+                line_only,
             });
         } else {
             let rel = naming::endpoint_rel_path(&route.method, &route.path);
@@ -427,6 +440,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                 file: project.rel(&path),
                 source,
                 status: ScanStatus::Created,
+                line_only: false,
             });
         }
     }
@@ -467,6 +481,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
         created,
         updated,
         unchanged,
+        line_only: line_only_count,
         stale,
         warnings,
         duration_ms: started.elapsed().as_millis() as u64,
@@ -493,13 +508,18 @@ pub fn run_cli(dir: &Path, args: &ScanArgs) -> Result<i32> {
         check: args.check,
     };
     let report = scan_project(&project, &opts)?;
-    let drift = report.created + report.updated > 0;
+    let drift = report_has_drift(&report, args.ignore_lines);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_human(&report, args.dry_run || args.check);
         if args.check && drift {
             eprintln!("endpoint files are out of date: run `ajiro-api scan` and commit the result");
+        } else if args.check && args.ignore_lines && report.line_only > 0 {
+            eprintln!(
+                "only `source.line` is out of date in {} file(s); not counted as drift (run `ajiro-api scan` to refresh them)",
+                report.line_only
+            );
         }
     }
     Ok(if args.check && drift {
@@ -509,6 +529,19 @@ pub fn run_cli(dir: &Path, args: &ScanArgs) -> Result<i32> {
     })
 }
 
+/// Drift for `scan --check`: a new endpoint or a changed `source`. With
+/// `ignore_lines`, files whose only change is `source.line` do not count:
+/// any edit above a route shifts its line, which would otherwise fail CI on
+/// unrelated changes.
+pub fn report_has_drift(r: &ScanReport, ignore_lines: bool) -> bool {
+    let updated = if ignore_lines {
+        r.updated.saturating_sub(r.line_only)
+    } else {
+        r.updated
+    };
+    r.created + updated > 0
+}
+
 fn print_human(r: &ScanReport, read_only: bool) {
     for e in &r.endpoints {
         let mark = match e.status {
@@ -516,7 +549,12 @@ fn print_human(r: &ScanReport, read_only: bool) {
             ScanStatus::Updated => "~",
             ScanStatus::Unchanged => continue,
         };
-        println!("{} {} {}  {}", mark, e.method, e.path, e.file);
+        let note = if e.line_only {
+            format!("  (line {} only)", e.source.line)
+        } else {
+            String::new()
+        };
+        println!("{} {} {}  {}{}", mark, e.method, e.path, e.file, note);
     }
     println!(
         "{}: {} created, {} updated, {} unchanged ({} endpoints, {} ms){}",

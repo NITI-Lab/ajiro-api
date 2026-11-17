@@ -49,7 +49,7 @@ ajiro-api scan            # ルーティングを読み取り、api/ にYAMLを�
 ajiro-api test            # 全エンドポイントを実行して検証
 ```
 
-`tests:` が空のエンドポイントには、ステータスが500未満であることを確認する `smoke` テストが自動で適用されます。データを変えうる POST・PUT・PATCH・DELETE には送らず、スキップします（送るときは `ajiro-api test --smoke-unsafe`）。ログインが必要なAPIは、環境の `setup` にログインのエンドポイントを書くと最初に実行され、`capture` したトークンやCookieを環境の `headers` で全リクエストに付けられます（[YAMLリファレンス](docs/yaml-reference.md)）。
+`tests:` が空のエンドポイントには、ステータスが500未満であることを確認する `smoke` テストが自動で適用されます（4xx は成功扱いですが警告を出します。401 は未ログインのことが多いため）。データを変えうる POST・PUT・PATCH・DELETE には送らず、スキップします（送るときは `ajiro-api test --smoke-unsafe`）。ログインが必要なAPIは、環境の `setup` にログインのエンドポイントを書くと最初に実行され、`capture` したトークンやCookieを環境の `headers` で全リクエストに付けられます（[YAMLリファレンス](docs/yaml-reference.md)）。
 
 ## YAMLの例
 
@@ -131,7 +131,7 @@ MCPサーバーだけを使う場合は、`.mcp.json` に次を追加します�
 | コマンド | 内容 |
 | --- | --- |
 | `ajiro-api init` | `ajiro-api.yaml` と `api/` を作る。フレームワークを自動判定 |
-| `ajiro-api scan` | ルーティングを静的解析してYAMLを生成・更新。`--check` でCI向けの差分検出、`--dry-run` で書き込まず確認 |
+| `ajiro-api scan` | ルーティングを静的解析してYAMLを生成・更新。`--check` でCI向けの差分検出（`--ignore-lines` で行ずれだけの変更は無視）、`--dry-run` で書き込まず確認 |
 | `ajiro-api test` | YAMLを実行して検証。`--json`、`--junit <FILE>`、`-u`（スナップショット更新）、`--env`、`--bail` など |
 | `ajiro-api list` | 定義済みエンドポイントの一覧 |
 | `ajiro-api validate` | YAMLの構文・スキーマ・参照（重複id、`depends_on`）を検証 |
@@ -165,6 +165,7 @@ GraphQL、gRPC、WebSocketは対象外です。優先度は要件定義書に基
 
 ```bash
 ajiro-api scan --check                          # YAMLがコードと食い違っていたら終了コード1
+ajiro-api scan --check --ignore-lines           # ただしルートの行がずれただけなら0
 ajiro-api test --env ci --junit report.xml      # JUnit XMLも出力
 ```
 
