@@ -4,6 +4,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- `README.md` is now the English README; the Japanese one moved to `README.ja.md`.
+
 ## [0.1.6] - 2026-11-17
 
 ### Changed
