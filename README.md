@@ -1,10 +1,23 @@
 # Ajiro API
 
-**API verification and spec sharing for AI coding agents.**
+**Let your coding agent test the APIs it writes.**
+
+[![npm](https://img.shields.io/npm/v/ajiro-api?label=npm)](https://www.npmjs.com/package/ajiro-api) [![crates.io](https://img.shields.io/crates/v/ajiro-api)](https://crates.io/crates/ajiro-api) [![CI](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml/badge.svg)](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 English | [日本語](README.ja.md)
 
 Ajiro API (`ajiro-api`) is a CLI that statically scans your backend routes into one YAML file per endpoint, runs those files as regression tests, and serves them as mocks. It is built so that Claude Code and Codex can run "implement -> scan -> test -> fix -> re-test" with no human in the loop.
+
+![Demo: ajiro-api scan and test pass, a moved route makes GET /todos/stats return 404, the fix makes all 34 tests pass again](docs/demo/demo.gif)
+
+With `--json`, the same failure comes with the request, the response body and the handler location, so the agent can fix it and re-run on its own. In Claude Code:
+
+```text
+/plugin marketplace add niti-lab/ajiro-api
+/plugin install ajiro-api@ajiro-api
+```
+
+Supports Next.js Route Handlers, Hono, FastAPI, Express and Go (net/http, chi, Echo).
 
 - Local-first: API definitions and test results never leave your machine.
 - Plain YAML, one file per endpoint: fewer Git conflicts, and a narrow surface for AI to edit.
@@ -149,15 +162,15 @@ All flags: [docs/cli-reference.md](docs/cli-reference.md) (Japanese) or `ajiro-a
 
 ## Supported frameworks
 
-| Framework | `framework` value | Priority |
-| --- | --- | --- |
-| Next.js Route Handlers | `nextjs` | Must (first release) |
-| Hono | `hono` | Must (first release) |
-| FastAPI | `fastapi` | Must (first release) |
-| Express | `express` | Should (within a month after release) |
-| Go net/http | `go-nethttp` | Should (within a month after release) |
-| Go chi | `go-chi` | Should (within a month after release) |
-| Go Echo | `go-echo` | Should (within a month after release) |
+| Framework | `framework` value |
+| --- | --- |
+| Next.js Route Handlers | `nextjs` |
+| Hono | `hono` |
+| FastAPI | `fastapi` |
+| Express | `express` |
+| Go net/http | `go-nethttp` |
+| Go chi | `go-chi` |
+| Go Echo | `go-echo` |
 
 GraphQL, gRPC and WebSocket are out of scope.
 

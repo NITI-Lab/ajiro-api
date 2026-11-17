@@ -4,6 +4,18 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-18
+
+### Added
+
+- The npm package declares `mcpName: io.github.NITI-Lab/ajiro-api`, so the MCP server can be listed in the official MCP Registry.
+- A demo GIF at the top of the READMEs (`docs/demo/demo.gif`, recorded with `docs/demo/demo.tape`).
+
+### Changed
+
+- The README framework table no longer lists Express and Go as "within a month"; all seven frameworks are supported.
+- `docs/requirements.md` is a public version that lists what ships today.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
