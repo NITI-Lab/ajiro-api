@@ -62,7 +62,7 @@ mock: {}
 | `headers` | マップ（文字列） | いいえ | リクエストヘッダー。秘密情報は書かず `{{ env.NAME }}` を使う |
 | `body` | 任意のYAML値 | いいえ | リクエストボディ。オブジェクトや配列はJSONで送られる |
 
-フレームワーク固有のパス表記は、`scan` が次のように正規化します。`:id`（Express・Hono・Echo）、`[id]`（Next.js）、`{id:int}`（FastAPI）、`{id...}`（Go）はすべて `{id}` になります。
+フレームワーク固有のパス表記は、`scan` が次のように正規化します。`:id`（Express・Hono・Echo）、`[id]`（Next.js）、`{id:int}`（FastAPI）、`{id...}`（Go）はすべて `{id}` になります。末尾の `/` は通常取り除かれますが、FastAPI では `/items` と `/items/` が別のルート（もう一方はリダイレクト）なので、コード上のパスどおり（`/items/` など）に保持されます。FastAPI の `{name:path}` は `{name}` になり、複数セグメントに一致する旨の警告が出ます。FastAPI アプリから `include_router` で到達できないルーターのルートは出力されず、警告にまとめられます。
 
 ### `source`（`scan` が書く）
 
