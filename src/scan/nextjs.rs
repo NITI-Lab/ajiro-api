@@ -1,8 +1,9 @@
 //! Next.js scanner: App Router `app/**/route.ts` and Pages Router
 //! `pages/api/**`.
 //!
-//! Limitations: `middleware` rewrites, `next.config` rewrites/basePath and
-//! i18n prefixes are not applied. Pages Router methods are detected from
+//! A static string-literal `basePath` from the `next.config.*` of the app
+//! owning a route file is prepended to its path. Limitations: `middleware`
+//! rewrites, `next.config` rewrites and i18n prefixes are not applied. Pages Router methods are detected from
 //! `req.method` comparisons / `switch`; when none is found the route is GET.
 
 use super::ts_common::{
@@ -12,6 +13,7 @@ use super::ts_common::{
 use super::Route;
 use crate::naming;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
@@ -22,9 +24,18 @@ pub fn scan(root: &Path, files: &[PathBuf]) -> Result<Vec<Route>> {
 pub fn scan_with_warnings(root: &Path, files: &[PathBuf]) -> Result<(Vec<Route>, Vec<String>)> {
     let mut parsers = Parsers::new()?;
     let mut routes = Vec::new();
-    for f in files.iter().filter(|f| is_ts_source(f)) {
+    let mut warnings = Vec::new();
+    let mut owners = Owners::new(root);
+    // App roots (owner dirs) that contributed at least one route, in scan order.
+    let mut app_roots: Vec<PathBuf> = Vec::new();
+    let mut catch_all: Vec<String> = Vec::new();
+    for f in files.iter().filter(|f| is_ts_source(f) && may_be_route(f)) {
         let rel = rel_path(root, f);
-        let comps: Vec<&str> = rel.split('/').collect();
+        let owner = owners.owner_of(f);
+        // Locate `app/` / `pages/api/` relative to the owning app, so that a
+        // directory named `app` above the project cannot confuse the scan.
+        let in_app = rel_path(&owner, f);
+        let comps: Vec<&str> = in_app.split('/').collect();
         let Some((file, dirs)) = comps.split_last() else {
             continue;
         };
@@ -46,12 +57,16 @@ pub fn scan_with_warnings(root: &Path, files: &[PathBuf]) -> Result<(Vec<Route>,
         let Some(tree) = parsers.parse(f, &src) else {
             continue;
         };
-        match kind {
+        let found = match kind {
             Kind::App(i) => {
                 let Some(path) = app_path(&dirs[i + 1..]) else {
                     continue;
                 };
-                routes.extend(app_routes(tree.root_node(), &src, &path, &rel));
+                if dirs[i + 1..].iter().any(|d| is_catch_all(d)) {
+                    catch_all.push(path.clone());
+                }
+                let path = owners.prefixed(&owner, &path, &mut warnings);
+                app_routes(tree.root_node(), &src, &path, &rel)
             }
             Kind::Pages(i) => {
                 let mut segs: Vec<&str> = dirs[i + 2..].to_vec();
@@ -59,11 +74,250 @@ pub fn scan_with_warnings(root: &Path, files: &[PathBuf]) -> Result<(Vec<Route>,
                     segs.push(stem);
                 }
                 let path = naming::normalize_path(&format!("/api/{}", segs.join("/")));
-                routes.extend(pages_routes(tree.root_node(), &src, &path, &rel));
+                if segs.iter().any(|d| is_catch_all(d)) {
+                    catch_all.push(path.clone());
+                }
+                let path = owners.prefixed(&owner, &path, &mut warnings);
+                pages_routes(tree.root_node(), &src, &path, &rel)
             }
+        };
+        if !found.is_empty() && !app_roots.contains(&owner) {
+            app_roots.push(owner);
+        }
+        routes.extend(found);
+    }
+    if app_roots.len() > 1 {
+        let names: Vec<String> = app_roots
+            .iter()
+            .map(|d| {
+                let r = rel_path(root, d);
+                if r.is_empty() {
+                    ".".to_string()
+                } else {
+                    r
+                }
+            })
+            .collect();
+        warnings.push(format!(
+            "found {} Next.js apps in one scan ({}): their routes share one set of endpoint files, \
+             and routes with the same method and path collide. Use one ajiro-api.yaml (or one `api_dir`) \
+             per app, with `sources` pointing at that app only",
+            app_roots.len(),
+            names.join(", ")
+        ));
+    }
+    if !catch_all.is_empty() {
+        catch_all.sort();
+        catch_all.dedup();
+        let shown: Vec<&str> = catch_all.iter().take(5).map(String::as_str).collect();
+        warnings.push(format!(
+            "{} catch-all route(s) (`[...name]` / `[[...name]]`) are listed as a single `{{name}}` \
+             path but match any number of path segments (`[[...name]]` also matches none): {}{}",
+            catch_all.len(),
+            shown.join(", "),
+            if catch_all.len() > shown.len() {
+                ", ..."
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok((routes, warnings))
+}
+
+/// Cheap pre-filter before the owner lookup (which touches the file system):
+/// only `app/**/route.*` and `pages/api/**` files can define routes.
+fn may_be_route(f: &Path) -> bool {
+    let comps: Vec<&str> = f
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let Some((file, dirs)) = comps.split_last() else {
+        return false;
+    };
+    let stem = file.rsplit_once('.').map(|x| x.0).unwrap_or(file);
+    (stem == "route" && dirs.contains(&"app"))
+        || dirs.windows(2).any(|w| w[0] == "pages" && w[1] == "api")
+}
+
+fn is_catch_all(seg: &str) -> bool {
+    seg.starts_with("[...") || seg.starts_with("[[...")
+}
+
+const CONFIG_NAMES: &[&str] = &[
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.ts",
+    "next.config.cjs",
+    "next.config.mts",
+    "next.config.cts",
+];
+
+/// Resolves the Next.js app (package) owning a file and its `basePath`.
+struct Owners<'a> {
+    root: &'a Path,
+    by_dir: HashMap<PathBuf, PathBuf>,
+    base_paths: HashMap<PathBuf, String>,
+    /// Per directory: (has a `next.config.*`, has a `package.json`), so each
+    /// directory is probed once (stat is slow on network / WSL mounts).
+    markers: HashMap<PathBuf, (bool, bool)>,
+}
+
+impl<'a> Owners<'a> {
+    fn new(root: &'a Path) -> Self {
+        Owners {
+            root,
+            by_dir: HashMap::new(),
+            base_paths: HashMap::new(),
+            markers: HashMap::new(),
         }
     }
-    Ok((routes, vec![]))
+
+    /// Nearest ancestor with a `next.config.*`, else nearest with a
+    /// `package.json`, else the project root. Never looks above the project
+    /// root for files inside it.
+    fn owner_of(&mut self, file: &Path) -> PathBuf {
+        let dir = file.parent().unwrap_or(self.root).to_path_buf();
+        if let Some(o) = self.by_dir.get(&dir) {
+            return o.clone();
+        }
+        let inside = dir.starts_with(self.root);
+        let mut pkg: Option<PathBuf> = None;
+        let mut found: Option<PathBuf> = None;
+        for a in dir.ancestors() {
+            let (has_config, has_pkg) = *self
+                .markers
+                .entry(a.to_path_buf())
+                .or_insert_with(|| dir_markers(a));
+            if has_config {
+                found = Some(a.to_path_buf());
+                break;
+            }
+            if pkg.is_none() && has_pkg {
+                pkg = Some(a.to_path_buf());
+            }
+            if inside && a == self.root {
+                break;
+            }
+        }
+        let owner = found.or(pkg).unwrap_or_else(|| self.root.to_path_buf());
+        self.by_dir.insert(dir, owner.clone());
+        owner
+    }
+
+    /// `path` with the owner's static `basePath` prepended.
+    fn prefixed(&mut self, owner: &Path, path: &str, warnings: &mut Vec<String>) -> String {
+        if !self.base_paths.contains_key(owner) {
+            let bp = read_base_path(self.root, owner, warnings);
+            self.base_paths.insert(owner.to_path_buf(), bp);
+        }
+        let bp = &self.base_paths[owner];
+        if bp.is_empty() {
+            path.to_string()
+        } else {
+            naming::normalize_path(&format!("{}{}", bp, path))
+        }
+    }
+}
+
+/// (has a `next.config.*`, has a `package.json`) for `dir`, from one directory
+/// listing instead of seven `stat` calls.
+fn dir_markers(dir: &Path) -> (bool, bool) {
+    let names = super::dircache::names(dir);
+    (
+        CONFIG_NAMES.iter().any(|n| names.contains(*n)),
+        names.contains("package.json"),
+    )
+}
+
+/// Static string-literal `basePath` of the `next.config.*` in `owner`
+/// (`""` when absent or not a literal; the latter also warns).
+fn read_base_path(root: &Path, owner: &Path, warnings: &mut Vec<String>) -> String {
+    for name in CONFIG_NAMES {
+        let cfg = owner.join(name);
+        let Ok(text) = std::fs::read_to_string(&cfg) else {
+            continue;
+        };
+        return match parse_base_path(&text) {
+            BasePath::None => String::new(),
+            BasePath::Literal(v) => {
+                let v = v.trim().trim_matches('/');
+                if v.is_empty() {
+                    String::new()
+                } else {
+                    format!("/{}", v)
+                }
+            }
+            BasePath::Dynamic => {
+                warnings.push(format!(
+                    "{}: `basePath` is not a plain string literal, so routes are listed without it \
+                     (use a literal, or add the prefix to the endpoint paths by hand)",
+                    rel_path(root, &cfg)
+                ));
+                String::new()
+            }
+        };
+    }
+    String::new()
+}
+
+#[derive(Debug, PartialEq)]
+enum BasePath {
+    None,
+    Literal(String),
+    Dynamic,
+}
+
+fn parse_base_path(text: &str) -> BasePath {
+    let mut mentioned = false;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+            continue;
+        }
+        let Some(i) = find_word(t, "basePath") else {
+            continue;
+        };
+        mentioned = true;
+        let rest = t[i + "basePath".len()..].trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(q) = rest
+            .chars()
+            .next()
+            .filter(|c| matches!(c, '"' | '\'' | '`'))
+        else {
+            return BasePath::Dynamic;
+        };
+        let body = &rest[1..];
+        let Some(end) = body.find(q) else {
+            return BasePath::Dynamic;
+        };
+        let after = body[end + 1..].trim_start();
+        let simple = after.is_empty()
+            || after.starts_with(',')
+            || after.starts_with('}')
+            || after.starts_with("//");
+        if !simple || (q == '`' && body[..end].contains("${")) {
+            return BasePath::Dynamic;
+        }
+        return BasePath::Literal(body[..end].to_string());
+    }
+    if mentioned {
+        BasePath::Dynamic
+    } else {
+        BasePath::None
+    }
+}
+
+fn find_word(line: &str, word: &str) -> Option<usize> {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    line.match_indices(word).map(|(i, _)| i).find(|&i| {
+        !line[..i].chars().next_back().is_some_and(ident)
+            && !line[i + word.len()..].chars().next().is_some_and(ident)
+    })
 }
 
 enum Kind {

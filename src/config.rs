@@ -38,19 +38,22 @@ impl Project {
         let start = start
             .canonicalize()
             .with_context(|| format!("cannot access {}", start.display()))?;
-        let mut dir: Option<&Path> = Some(&start);
-        while let Some(d) = dir {
-            let candidate = d.join(CONFIG_FILE);
-            if candidate.is_file() {
-                return Project::load(&candidate);
-            }
-            dir = d.parent();
+        if let Some(candidate) = Project::find_config(&start) {
+            return Project::load(&candidate);
         }
         bail!(
             "{} not found in {} or any parent directory. Run `ajiro-api init` first.",
             CONFIG_FILE,
             start.display()
         )
+    }
+
+    /// Path of the nearest `ajiro-api.yaml` at or above `start`.
+    fn find_config(start: &Path) -> Option<PathBuf> {
+        start
+            .ancestors()
+            .map(|d| d.join(CONFIG_FILE))
+            .find(|c| c.is_file())
     }
 
     /// Load the config file at `path`.
@@ -76,13 +79,17 @@ impl Project {
 
     /// Discover the project, or fall back to an in-memory default config
     /// rooted at `start` (used by commands that can work without init).
+    ///
+    /// The fallback applies only when no `ajiro-api.yaml` exists. A config
+    /// that exists but is invalid is an error, never silently ignored.
     pub fn discover_or_default(start: &Path) -> Result<Project> {
-        match Project::discover(start) {
-            Ok(p) => Ok(p),
-            Err(_) => Ok(Project {
-                root: start.canonicalize().unwrap_or_else(|_| start.to_path_buf()),
-                config: ProjectConfig::default(),
-            }),
+        let canon = start.canonicalize().ok();
+        if let Some(c) = canon.as_deref().and_then(Project::find_config) {
+            return Project::load(&c);
         }
+        Ok(Project {
+            root: canon.unwrap_or_else(|| start.to_path_buf()),
+            config: ProjectConfig::default(),
+        })
     }
 }

@@ -6,8 +6,10 @@
 //! existing ones (text based, so everything humans / AI wrote stays
 //! byte-identical).
 
+pub(crate) mod dircache;
 pub mod express;
 pub mod fastapi;
+mod gitignore;
 pub mod go;
 pub mod hono;
 pub mod nextjs;
@@ -90,43 +92,98 @@ fn abs_path(project: &Project, p: &Path) -> PathBuf {
     }
 }
 
-fn collect_files(project: &Project, opts: &ScanOptions) -> Vec<PathBuf> {
+/// Test code is not application code: skipped below the scanned directory.
+fn is_test_dir(name: &str) -> bool {
+    matches!(name, "tests" | "test" | "__tests__")
+}
+
+fn is_test_file(name: &str) -> bool {
+    name == "conftest.py"
+        || (name.starts_with("test_") && name.ends_with(".py"))
+        || name.ends_with("_test.py")
+        || name.ends_with("_test.go")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+}
+
+fn collect_files(project: &Project, opts: &ScanOptions, framework: &str) -> Vec<PathBuf> {
     let roots: Vec<PathBuf> = if opts.paths.is_empty() {
         project.source_dirs()
     } else {
         opts.paths.iter().map(|p| abs_path(project, p)).collect()
     };
     let mut files = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for r in roots {
         if r.is_file() {
-            files.push(r);
+            if seen.insert(r.clone()) {
+                files.push(r);
+            }
             continue;
         }
+        let exclude = project.config.exclude.clone();
+        let proj = project.clone();
+        let is_next = framework == "nextjs";
+        let mut git = gitignore::GitFilter::discover(&r);
         let walker = walkdir::WalkDir::new(&r)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|e| {
+            .filter_entry(move |e| {
                 if e.depth() == 0 {
                     return true;
                 }
                 let name = e.file_name().to_string_lossy();
-                if e.file_type().is_dir()
-                    && (SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.'))
-                {
+                let rel = proj.rel(e.path());
+                let is_dir = e.file_type().is_dir();
+                if is_dir {
+                    if SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.') {
+                        return false;
+                    }
+                    // A Next.js route directory may legitimately be named `test`.
+                    let route_dir = is_next && rel.split('/').any(|c| c == "app" || c == "pages");
+                    if is_test_dir(&name) && !(route_dir && name != "__tests__") {
+                        return false;
+                    }
+                } else if is_test_file(&name) {
                     return false;
                 }
-                !is_excluded(&project.rel(e.path()), &project.config.exclude)
+                if is_excluded(&rel, &exclude) {
+                    return false;
+                }
+                !git.as_mut().is_some_and(|g| g.is_ignored(e.path(), is_dir))
             });
-        for e in walker
+        // Sorted within each source, sources kept in the configured order:
+        // the first source wins when two routes collide.
+        let mut batch: Vec<PathBuf> = walker
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-        {
-            files.push(e.into_path());
+            .map(|e| e.into_path())
+            .collect();
+        batch.sort();
+        for f in batch {
+            if seen.insert(f.clone()) {
+                files.push(f);
+            }
         }
     }
-    files.sort();
-    files.dedup();
     files
+}
+
+/// Clean `file` for output: `/`-separated, no duplicate slashes, relative to
+/// the project root when inside it.
+fn clean_file(project: &Project, file: &str) -> String {
+    let f = file.replace('\\', "/");
+    let p = Path::new(&f);
+    let f = match p.strip_prefix(&project.root) {
+        Ok(r) if p.is_absolute() => r.to_string_lossy().replace('\\', "/"),
+        _ => f,
+    };
+    let lead = f.starts_with('/');
+    let parts: Vec<&str> = f
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    format!("{}{}", if lead { "/" } else { "" }, parts.join("/"))
 }
 
 fn render_source_children(s: &SourceInfo) -> Vec<String> {
@@ -278,10 +335,23 @@ fn run_framework(
         "nextjs" => nextjs::scan_with_warnings(root, files)?,
         "hono" => hono::scan_with_warnings(root, files)?,
         "express" => express::scan_with_warnings(root, files)?,
-        "fastapi" => (fastapi::scan(root, files)?, vec![]),
+        "fastapi" => fastapi::scan_with_warnings(root, files)?,
         "go-nethttp" | "go-chi" | "go-echo" => (go::scan(root, files)?, vec![]),
         other => bail!("unsupported framework `{}`", other),
     })
+}
+
+/// Whether `f` has an extension the `framework` scanner parses.
+fn is_source_file(f: &Path, framework: &str) -> bool {
+    let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match framework {
+        "fastapi" => ext == "py",
+        "go-nethttp" | "go-chi" | "go-echo" => ext == "go",
+        _ => matches!(
+            ext,
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
+        ),
+    }
 }
 
 pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport> {
@@ -294,8 +364,9 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     {
         Some(f) => f,
         None => bail!(
-            "could not detect the framework. Pass --framework <{}> or set `framework` in ajiro-api.yaml",
-            FRAMEWORKS.join("|")
+            "could not detect the framework. Pass --framework <{}> or set `framework` in ajiro-api.yaml. {}",
+            FRAMEWORKS.join("|"),
+            crate::init::no_framework_message(&crate::init::detect(&project.root))
         ),
     };
     if !FRAMEWORKS.contains(&framework.as_str()) {
@@ -306,16 +377,62 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
         );
     }
 
-    let files = collect_files(project, opts);
+    dircache::clear();
+    let files = collect_files(project, opts, &framework);
     let (mut routes, mut warnings) = run_framework(&framework, project, &files)?;
+    for r in &mut routes {
+        r.file = clean_file(project, &r.file);
+    }
+    // One endpoint per method + path: the first route in scanner order (which
+    // follows `sources` order) wins; every dropped duplicate is reported.
+    let framework_warnings = warnings.len();
+    let mut first: HashMap<(String, String), usize> = HashMap::new();
+    let mut kept: Vec<Route> = Vec::with_capacity(routes.len());
+    for r in routes {
+        match first.get(&(r.method.clone(), r.path.clone())) {
+            Some(&i) => {
+                let k = &kept[i];
+                // The framework scanner may already have explained this one
+                // (FastAPI reports which registration shadows which).
+                let explained = warnings[..framework_warnings]
+                    .iter()
+                    .any(|w| w.starts_with(&format!("duplicate route {} {}:", r.method, r.path)));
+                if !explained && (k.file.as_str(), k.line) != (r.file.as_str(), r.line) {
+                    warnings.push(format!(
+                        "duplicate route {} {}: {}:{} ignored, keeping {}:{}",
+                        r.method, r.path, r.file, r.line, k.file, k.line
+                    ));
+                }
+            }
+            None => {
+                first.insert((r.method.clone(), r.path.clone()), kept.len());
+                kept.push(r);
+            }
+        }
+    }
+    let mut routes = kept;
     routes.sort_by(|a, b| (&a.path, &a.method).cmp(&(&b.path, &b.method)));
-    routes.dedup_by(|b, a| a.path == b.path && a.method == b.method);
     if routes.is_empty() {
+        let parsed = files
+            .iter()
+            .filter(|f| is_source_file(f, &framework))
+            .count();
         let mut msg = format!(
-            "no {} routes found in {} scanned files",
+            "no {} routes found in {} scanned source file(s) ({} files in total, others are not code). \
+             The project may use a framework ajiro-api does not support (supported: {}); \
+             check `sources`/`exclude` in ajiro-api.yaml and --framework",
             framework,
-            files.len()
+            parsed,
+            files.len(),
+            FRAMEWORKS.join(", ")
         );
+        let unsupported = crate::init::detect(&project.root).unsupported;
+        if !unsupported.is_empty() {
+            msg.push_str(&format!(
+                ". This project looks like {}, which is not supported",
+                unsupported.join(" / ")
+            ));
+        }
         if framework == "hono" && uses_hono_openapi(&project.root, &files) {
             msg.push_str(
                 ". This project uses @hono/zod-openapi: if the app serves an OpenAPI document, \
@@ -330,15 +447,50 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     for e in &load_errors {
         warnings.push(format!("{}: {}", e.file, e.message));
     }
+    // Match existing files by method + path, keeping a trailing slash (FastAPI
+    // serves `/items/` and `/items` as different routes). A file whose exact
+    // path no scanned route has also matches with the slash ignored, so a
+    // hand-written `/x/` still pairs with a scanned `/x` (and vice versa).
     let mut by_key: HashMap<(String, String), usize> = HashMap::new();
     for (i, e) in existing.iter().enumerate() {
         let key = (
             e.def.request.method.to_ascii_uppercase(),
-            naming::normalize_path(&e.def.request.path),
+            naming::normalize_path_keep_slash(&e.def.request.path),
         );
         by_key.entry(key).or_insert(i);
     }
-    let mut taken_ids: HashSet<String> = existing.iter().map(|e| e.def.id.clone()).collect();
+    let scanned_keys: HashSet<(String, String)> = routes
+        .iter()
+        .map(|r| (r.method.clone(), r.path.clone()))
+        .collect();
+    let loose = |p: &str| naming::normalize_path(p);
+    let loose_scanned: HashMap<(String, String), (String, String)> = routes
+        .iter()
+        .filter(|r| r.path != loose(&r.path))
+        .map(|r| {
+            (
+                (r.method.clone(), loose(&r.path)),
+                (r.method.clone(), r.path.clone()),
+            )
+        })
+        .collect();
+    for (i, e) in existing.iter().enumerate() {
+        let method = e.def.request.method.to_ascii_uppercase();
+        let exact = naming::normalize_path_keep_slash(&e.def.request.path);
+        if scanned_keys.contains(&(method.clone(), exact.clone())) {
+            continue;
+        }
+        let lk = (method.clone(), loose(&exact));
+        // existing `/x/` -> scanned `/x`
+        if scanned_keys.contains(&lk) {
+            by_key.entry(lk.clone()).or_insert(i);
+        }
+        // existing `/x` -> scanned `/x/`
+        if let Some(sk) = loose_scanned.get(&lk) {
+            by_key.entry(sk.clone()).or_insert(i);
+        }
+    }
+    let taken_ids: HashSet<String> = existing.iter().map(|e| e.def.id.clone()).collect();
     let mut taken_paths: HashSet<PathBuf> = existing.iter().map(|e| e.path.clone()).collect();
     let api_dir = project.api_dir();
 
@@ -348,7 +500,56 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     let mut line_only_count = 0;
     let write = !(opts.dry_run || opts.check);
 
-    for route in &routes {
+    // Ids for new files are assigned for the whole batch at once so that they
+    // do not depend on scan order (see `naming::assign_ids`).
+    let new_idx: Vec<usize> = (0..routes.len())
+        .filter(|&i| !by_key.contains_key(&(routes[i].method.clone(), routes[i].path.clone())))
+        .collect();
+    let new_pairs: Vec<(String, String)> = new_idx
+        .iter()
+        .map(|&i| (routes[i].method.clone(), routes[i].path.clone()))
+        .collect();
+    let new_ids: HashMap<usize, String> = new_idx
+        .iter()
+        .copied()
+        .zip(naming::assign_ids(&new_pairs, &taken_ids))
+        .collect();
+    let new_rels: HashMap<usize, PathBuf> = new_idx
+        .iter()
+        .map(|&i| {
+            (
+                i,
+                naming::endpoint_rel_path(&routes[i].method, &routes[i].path),
+            )
+        })
+        .collect();
+
+    // File-name collisions get `-2`, `-3` in (path, method) order, not scan order.
+    let mut file_order = new_idx.clone();
+    file_order.sort_by(|&a, &b| {
+        (&routes[a].path, &routes[a].method, a).cmp(&(&routes[b].path, &routes[b].method, b))
+    });
+    let mut new_rels = new_rels;
+    {
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for &i in &file_order {
+            let rel = new_rels[&i].clone();
+            let mut cand = rel.clone();
+            let mut n = 2;
+            while seen.contains(&cand) {
+                let stem = rel
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("endpoint");
+                cand = rel.with_file_name(format!("{}-{}.yaml", stem, n));
+                n += 1;
+            }
+            seen.insert(cand.clone());
+            new_rels.insert(i, cand);
+        }
+    }
+
+    for (ri, route) in routes.iter().enumerate() {
         let source = SourceInfo {
             framework: if route.framework.is_empty() {
                 framework.clone()
@@ -407,7 +608,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                 line_only,
             });
         } else {
-            let rel = naming::endpoint_rel_path(&route.method, &route.path);
+            let rel = new_rels[&ri].clone();
             let mut path = api_dir.join(&rel);
             let mut n = 2;
             while taken_paths.contains(&path) || path.exists() {
@@ -418,9 +619,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                 path = api_dir.join(rel.with_file_name(format!("{}-{}.yaml", stem, n)));
                 n += 1;
             }
-            let id =
-                naming::unique_id(&naming::endpoint_id(&route.method, &route.path), &taken_ids);
-            taken_ids.insert(id.clone());
+            let id = new_ids[&ri].clone();
             taken_paths.insert(path.clone());
             let text = render_new_file(&id, route, &source);
             serde_yaml_rust2::from_str::<EndpointDef>(&text)
@@ -522,7 +721,15 @@ pub fn run_cli(dir: &Path, args: &ScanArgs) -> Result<i32> {
             );
         }
     }
-    Ok(if args.check && drift {
+    // `--check` must not pass vacuously: nothing found and nothing on disk
+    // means the scan saw no project at all (wrong framework or sources).
+    let vacuous = args.check && report.endpoints.is_empty() && report.stale.is_empty();
+    if vacuous && !args.json {
+        eprintln!(
+            "scan --check found no routes and there are no endpoint files: nothing was checked"
+        );
+    }
+    Ok(if (args.check && drift) || vacuous {
         crate::exit::FAILURE
     } else {
         crate::exit::OK

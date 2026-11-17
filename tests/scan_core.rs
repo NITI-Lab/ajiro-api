@@ -287,7 +287,8 @@ fn colliding_ids_and_file_names_get_suffixes() {
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 4);
-    assert!(ids.contains(&"users.get-2".to_string()));
+    assert!(ids.contains(&"users.id.get".to_string()));
+    assert!(ids.contains(&"users.user-id.get".to_string()));
     let mut files: Vec<_> = r.endpoints.iter().map(|e| e.file.clone()).collect();
     files.sort();
     files.dedup();
@@ -295,6 +296,52 @@ fn colliding_ids_and_file_names_get_suffixes() {
     assert!(files.contains(&"api/a/get-a-b-c-2.yaml".to_string()));
     let r2 = scan(dir.path(), false);
     assert_eq!((r2.created, r2.updated, r2.unchanged), (0, 0, 4));
+}
+
+fn ids_by_route(index: &str) -> Vec<(String, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "package.json",
+        r#"{"dependencies":{"hono":"4"}}"#,
+    );
+    write(dir.path(), "src/index.ts", index);
+    init::run_cli(dir.path(), &init_args()).unwrap();
+    let r = scan(dir.path(), false);
+    let mut v: Vec<_> = r
+        .endpoints
+        .iter()
+        .map(|e| (format!("{} {}", e.method, e.path), e.id.clone()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn colliding_ids_do_not_depend_on_declaration_order() {
+    let head = "import { Hono } from 'hono';\nconst app = new Hono();\n";
+    let a = "app.get('/medical/offices/users', a);\napp.get('/medical/offices/:medical_office_id/users', b);\napp.get('/health', c);\napp.get('/api/health', d);\n";
+    let b = "app.get('/api/health', d);\napp.get('/health', c);\napp.get('/medical/offices/:medical_office_id/users', b);\napp.get('/medical/offices/users', a);\n";
+    let first = ids_by_route(&format!("{head}{a}"));
+    let second = ids_by_route(&format!("{head}{b}"));
+    assert_eq!(first, second);
+    let get = |route: &str| {
+        first
+            .iter()
+            .find(|(r, _)| r == route)
+            .map(|(_, id)| id.as_str())
+            .unwrap()
+    };
+    assert_eq!(
+        get("GET /medical/offices/users"),
+        "medical.offices.users.list"
+    );
+    assert_eq!(
+        get("GET /medical/offices/{medical_office_id}/users"),
+        "medical.offices.medical-office-id.users.list"
+    );
+    assert_eq!(get("GET /health"), "health.get");
+    assert_eq!(get("GET /api/health"), "api.health.get");
 }
 
 #[test]
@@ -555,4 +602,339 @@ fn init_defaults_per_framework() {
     init::run_cli(dir.path(), &init_args()).unwrap();
     let cfg = read(dir.path(), "ajiro-api.yaml");
     assert!(cfg.contains("  - src/app\n  - src/pages\n") && cfg.contains("localhost:3000"));
+}
+
+// ---- multi-source, basePath, .gitignore, tests, clean paths ----
+
+fn scan_with(root: &Path, framework: &str, sources: &[&str], exclude: &[&str]) -> ScanReport {
+    let config = ajiro_api::model::ProjectConfig {
+        framework: Some(framework.to_string()),
+        sources: sources.iter().map(|s| s.to_string()).collect(),
+        exclude: exclude.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
+    };
+    let project = Project {
+        root: root.to_path_buf(),
+        config,
+    };
+    scan_project(
+        &project,
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn mp(r: &ScanReport) -> Vec<String> {
+    r.endpoints
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {} {}:{}",
+                e.method, e.path, e.source.file, e.source.line
+            )
+        })
+        .collect()
+}
+
+fn two_next_apps(dir: &Path) {
+    for app in ["web", "admin"] {
+        write(
+            dir,
+            &format!("apps/{app}/package.json"),
+            r#"{"dependencies":{"next":"15"}}"#,
+        );
+        write(
+            dir,
+            &format!("apps/{app}/src/app/api/health/route.ts"),
+            "export function GET() {}",
+        );
+    }
+    write(
+        dir,
+        "apps/web/src/app/api/only-web/route.ts",
+        "export function GET() {}",
+    );
+}
+
+#[test]
+fn duplicate_routes_warn_and_first_source_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    two_next_apps(dir.path());
+    for order in [
+        ["apps/web/src", "apps/admin/src"],
+        ["apps/admin/src", "apps/web/src"],
+    ] {
+        let r = scan_with(dir.path(), "nextjs", &order, &[]);
+        let first = order[0].trim_end_matches("/src");
+        let health = r
+            .endpoints
+            .iter()
+            .find(|e| e.path == "/api/health")
+            .unwrap();
+        assert_eq!(
+            health.source.file,
+            format!("{first}/src/app/api/health/route.ts")
+        );
+        assert_eq!(r.endpoints.len(), 2, "{:?}", mp(&r));
+        let dup: Vec<_> = r
+            .warnings
+            .iter()
+            .filter(|w| w.contains("duplicate route GET /api/health"))
+            .collect();
+        assert_eq!(dup.len(), 1, "{:?}", r.warnings);
+        assert!(
+            dup[0].contains("apps/web/src/app/api/health/route.ts:1")
+                && dup[0].contains("apps/admin/src/app/api/health/route.ts:1")
+        );
+        assert!(r.warnings.iter().any(|w| w.contains("2 Next.js apps")));
+    }
+}
+
+#[test]
+fn single_nextjs_app_has_no_multi_app_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    two_next_apps(dir.path());
+    let r = scan_with(dir.path(), "nextjs", &["apps/web/src"], &[]);
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+}
+
+#[test]
+fn nextjs_base_path_literal_is_prepended_per_app() {
+    let dir = tempfile::tempdir().unwrap();
+    two_next_apps(dir.path());
+    write(
+        dir.path(),
+        "apps/admin/next.config.js",
+        "/** @type {import('next').NextConfig} */\nconst nextConfig = {\n  basePath: \"/admin\",\n};\nmodule.exports = nextConfig;\n",
+    );
+    write(
+        dir.path(),
+        "apps/web/next.config.mjs",
+        "export default { basePath: '' };\n",
+    );
+    let r = scan_with(dir.path(), "nextjs", &["apps/admin/src"], &[]);
+    assert_eq!(
+        mp(&r),
+        vec!["GET /admin/api/health apps/admin/src/app/api/health/route.ts:1"]
+    );
+    let r = scan_with(dir.path(), "nextjs", &["apps/web/src"], &[]);
+    assert!(mp(&r)[0].starts_with("GET /api/health"), "{:?}", mp(&r));
+    // both apps: the same path no longer collides
+    let r = scan_with(
+        dir.path(),
+        "nextjs",
+        &["apps/web/src", "apps/admin/src"],
+        &[],
+    );
+    assert_eq!(r.endpoints.len(), 3);
+    assert!(r.endpoints.iter().any(|e| e.path == "/admin/api/health"));
+}
+
+#[test]
+fn nextjs_base_path_non_literal_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "package.json",
+        r#"{"dependencies":{"next":"15"}}"#,
+    );
+    write(
+        dir.path(),
+        "next.config.ts",
+        "export default { basePath: process.env.BASE_PATH };\n",
+    );
+    write(
+        dir.path(),
+        "src/app/api/x/route.ts",
+        "export function GET() {}",
+    );
+    let r = scan_with(dir.path(), "nextjs", &["src"], &[]);
+    assert_eq!(r.endpoints[0].path, "/api/x");
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("next.config.ts") && w.contains("basePath")),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn nextjs_catch_all_routes_are_summarised() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "package.json",
+        r#"{"dependencies":{"next":"15"}}"#,
+    );
+    write(
+        dir.path(),
+        "src/app/api/files/[...slug]/route.ts",
+        "export function GET() {}",
+    );
+    write(
+        dir.path(),
+        "src/app/api/docs/[[...slug]]/route.ts",
+        "export function GET() {}",
+    );
+    write(
+        dir.path(),
+        "src/pages/api/all/[...rest].ts",
+        "export default function h() {}",
+    );
+    let r = scan_with(dir.path(), "nextjs", &["src"], &[]);
+    let w: Vec<_> = r
+        .warnings
+        .iter()
+        .filter(|w| w.contains("catch-all"))
+        .collect();
+    assert_eq!(w.len(), 1, "{:?}", r.warnings);
+    assert!(w[0].starts_with("3 catch-all"));
+    assert!(r.endpoints.iter().any(|e| e.path == "/api/files/{slug}"));
+}
+
+#[test]
+fn nextjs_route_dir_named_test_is_kept_and_ancestor_app_dir_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    // an `app` directory above the Next.js app must not shift the route root
+    write(
+        dir.path(),
+        "app/web/package.json",
+        r#"{"dependencies":{"next":"15"}}"#,
+    );
+    write(
+        dir.path(),
+        "app/web/src/app/api/test/route.ts",
+        "export function GET() {}",
+    );
+    write(
+        dir.path(),
+        "app/web/src/app/api/x/route.test.ts",
+        "export function GET() {}",
+    );
+    let r = scan_with(dir.path(), "nextjs", &["app/web/src"], &[]);
+    assert_eq!(
+        mp(&r),
+        vec!["GET /api/test app/web/src/app/api/test/route.ts:1"]
+    );
+}
+
+#[test]
+fn gitignored_paths_are_skipped_including_parent_and_nested_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    write(repo, ".gitignore", "bundle/\n");
+    write(repo, "pkg/sub/.gitignore", "/gen.py\n");
+    let app = "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/a')\ndef a(): pass\n";
+    write(repo, "pkg/main.py", app);
+    write(
+        repo,
+        "pkg/bundle/lib.py",
+        &app.replace("'/a'", "'/bundled'"),
+    );
+    write(repo, "pkg/sub/gen.py", &app.replace("'/a'", "'/gen'"));
+    write(repo, "pkg/sub/ok.py", &app.replace("'/a'", "'/ok'"));
+    let r = scan_with(repo, "fastapi", &["pkg"], &[]);
+    let paths: Vec<_> = r.endpoints.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["/a", "/ok"], "{:?}", r.warnings);
+}
+
+#[test]
+fn test_code_is_skipped_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let app = "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/a')\ndef a(): pass\n";
+    write(d, "src/main.py", app);
+    for f in [
+        "src/tests/t.py",
+        "src/test/t.py",
+        "src/__tests__/t.py",
+        "src/test_api.py",
+        "src/api_test.py",
+        "src/conftest.py",
+    ] {
+        write(d, f, &app.replace("'/a'", "'/leak'"));
+    }
+    write(d, "src/test_utils/ok.py", &app.replace("'/a'", "'/utils'"));
+    let r = scan_with(d, "fastapi", &["src"], &[]);
+    let paths: Vec<_> = r.endpoints.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["/a", "/utils"]);
+
+    let go = "package main\nimport \"net/http\"\nfunc main() { http.HandleFunc(\"/a\", h) }\nfunc h(w http.ResponseWriter, r *http.Request) {}\n";
+    write(d, "go/main.go", go);
+    write(d, "go/main_test.go", &go.replace("\"/a\"", "\"/leak\""));
+    let r = scan_with(d, "go-nethttp", &["go"], &[]);
+    assert!(r.endpoints.iter().all(|e| e.path != "/leak"));
+    assert!(!r.endpoints.is_empty());
+}
+
+#[test]
+fn source_file_is_a_clean_path_for_sources_outside_the_project() {
+    let outside = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write(outside.path(), "src/index.ts", INDEX);
+    let abs = outside.path().join("src");
+    let r = scan_with(project.path(), "hono", &[abs.to_str().unwrap()], &[]);
+    assert_eq!(r.endpoints.len(), 3);
+    for e in &r.endpoints {
+        assert!(
+            !e.source.file.contains("//") && Path::new(&e.source.file).is_absolute(),
+            "{}",
+            e.source.file
+        );
+        assert!(!e.source.file.contains('\\'));
+    }
+    // go-chi used to produce `//mnt/...`. Absolute is `/...` on Unix and
+    // `C:/...` (forward slashes) on Windows.
+    let chi =
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/go-chi"))
+            .unwrap()
+            .count();
+    assert!(chi > 0);
+    let go_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/go-chi");
+    let r = scan_with(project.path(), "go-chi", &[go_src.to_str().unwrap()], &[]);
+    assert!(!r.endpoints.is_empty());
+    assert!(
+        r.endpoints
+            .iter()
+            .all(|e| !e.source.file.contains("//") && Path::new(&e.source.file).is_absolute()),
+        "{:?}",
+        r.endpoints
+            .iter()
+            .map(|e| &e.source.file)
+            .collect::<Vec<_>>()
+    );
+    // inside the project: relative
+    write(project.path(), "inner/index.ts", INDEX);
+    let r = scan_with(project.path(), "hono", &["inner"], &[]);
+    assert_eq!(r.endpoints[0].source.file, "inner/index.ts");
+}
+
+#[test]
+fn tracked_files_are_scanned_even_when_a_gitignore_pattern_matches() {
+    let git = |d: &Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(d)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    if !git(d, &["init", "-q"]) {
+        return; // git not installed
+    }
+    write(d, "package.json", r#"{"dependencies":{"next":"15"}}"#);
+    write(d, "src/app/t/route.ts", "export function GET() {}");
+    write(d, "src/app/u/route.ts", "export function GET() {}");
+    write(d, ".gitignore", "[tu]\n");
+    assert!(git(d, &["add", "-f", "src/app/t/route.ts", "package.json"]));
+    let r = scan_with(d, "nextjs", &["src"], &[]);
+    let paths: Vec<_> = r.endpoints.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["/t"]); // `/u` is ignored and untracked
 }

@@ -110,7 +110,36 @@ pub fn path_params(path: &str) -> Vec<String> {
 }
 
 fn is_param(seg: &str) -> bool {
-    seg.starts_with('{') && seg.ends_with('}')
+    seg.len() >= 2
+        && seg.starts_with('{')
+        && seg.ends_with('}')
+        && !seg[1..seg.len() - 1].contains(['{', '}'])
+}
+
+/// A segment mixing parameters and literal text, e.g. `{item_id}.png`.
+fn is_mixed(seg: &str) -> bool {
+    !is_param(seg) && (seg.contains('{') || seg.contains('['))
+}
+
+/// Literal text of a mixed segment with every `{...}` / `[...]` group removed
+/// (`{item_id}.png` -> `.png`).
+fn literal_part(seg: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for c in seg.chars() {
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A segment that carries a parameter (whole or mixed).
+fn has_param(seg: &str) -> bool {
+    is_param(seg) || is_mixed(seg)
 }
 
 fn is_prefix_segment(seg: &str) -> bool {
@@ -133,7 +162,13 @@ fn meaningful_segments(path: &str) -> Vec<String> {
     let statics: Vec<String> = segs[start..]
         .iter()
         .filter(|s| !is_param(s))
-        .map(|s| sanitize(s))
+        .map(|s| {
+            if is_mixed(s) {
+                sanitize(&literal_part(s))
+            } else {
+                sanitize(s)
+            }
+        })
         .filter(|s| !s.is_empty())
         .collect();
     if !statics.is_empty() {
@@ -157,6 +192,21 @@ fn sanitize(s: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+/// Like [`sanitize`], but splits camelCase first so a parameter `userId`
+/// reads `user-id` in an id.
+fn sanitize_param(s: &str) -> String {
+    let mut spaced = String::new();
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c.is_ascii_uppercase() && prev_lower {
+            spaced.push('-');
+        }
+        prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        spaced.push(c);
+    }
+    sanitize(&spaced)
 }
 
 /// Resource directory name: first meaningful segment, or `root`.
@@ -197,35 +247,124 @@ pub fn endpoint_rel_path(method: &str, path: &str) -> PathBuf {
     Path::new(&resource_of(path)).join(format!("{}.yaml", file_stem(method, path)))
 }
 
-/// Default endpoint id: `<segments joined by .>.<action>`.
+/// Collection-like words that make a trailing static segment a `list`.
+const COLLECTION_WORDS: &[&str] = &[
+    "list", "all", "search", "history", "index", "recent", "feed", "news", "overview", "summary",
+    "children", "people", "data",
+];
+
+/// Does a trailing static segment name a collection (`users`, `logs`,
+/// `search`) rather than a single resource (`health`, `me`, `detail`)?
 ///
-/// - `GET /users` -> `users.list`, `GET /users/{id}` -> `users.get`
-/// - `POST /users` -> `users.create`, `PUT` -> `replace`, `PATCH` -> `update`,
-///   `DELETE` -> `delete`, other methods -> lower-case method name.
-/// - `GET /users/{id}/posts` -> `users.posts.list`
-pub fn endpoint_id(method: &str, path: &str) -> String {
-    let segs = meaningful_segments(path);
-    let base = if segs.is_empty() {
-        "root".to_string()
-    } else {
-        segs.join(".")
-    };
-    let ends_with_param = path
-        .split('/')
-        .rfind(|s| !s.is_empty())
-        .map(is_param)
-        .unwrap_or(false);
-    let m = method.to_ascii_uppercase();
-    let action = match m.as_str() {
+/// Looks at the last `-`-separated word: it is a collection when it is a
+/// known collection word, or ends with `s` but not `ss` / `us` / `is`
+/// (`status`, `address`, `analysis` are singular).
+fn looks_like_collection(segment: &str) -> bool {
+    let word = segment.rsplit('-').next().unwrap_or(segment);
+    if COLLECTION_WORDS.contains(&word) {
+        return true;
+    }
+    word.len() > 2
+        && word.ends_with('s')
+        && !word.ends_with("ss")
+        && !word.ends_with("us")
+        && !word.ends_with("is")
+}
+
+/// Verb synonyms: a trailing static segment equal to one of these already
+/// says the action, so it is not appended again (`sessions/create` ->
+/// `sessions.create`, not `sessions.create.create`).
+fn action_synonyms(action: &str) -> &'static [&'static str] {
+    match action {
+        "create" => &["create", "new", "add"],
+        "replace" => &["replace", "update", "edit"],
+        "update" => &["update", "edit"],
+        "delete" => &["delete", "remove"],
+        "list" => &["list"],
+        "get" => &["get"],
+        _ => &[],
+    }
+}
+
+fn action_of(method: &str, last_seg: Option<&str>) -> String {
+    let ends_with_param = last_seg.map(has_param).unwrap_or(false);
+    match method.to_ascii_uppercase().as_str() {
         "GET" if ends_with_param => "get".to_string(),
-        "GET" => "list".to_string(),
+        "GET" => {
+            let seg = last_seg.map(sanitize).unwrap_or_default();
+            if seg.is_empty() || is_prefix_segment(&seg) || looks_like_collection(&seg) {
+                "list".to_string()
+            } else {
+                "get".to_string()
+            }
+        }
         "POST" => "create".to_string(),
         "PUT" => "replace".to_string(),
         "PATCH" => "update".to_string(),
         "DELETE" => "delete".to_string(),
         other => other.to_ascii_lowercase(),
-    };
-    format!("{}.{}", base, action)
+    }
+}
+
+fn last_segment(path: &str) -> Option<&str> {
+    path.split('/').rfind(|s| !s.is_empty())
+}
+
+/// Default endpoint id: `<segments joined by .>.<action>`.
+///
+/// - Segments: static segments only; `api` / `v1` prefixes and parameters are
+///   dropped. A segment mixing a parameter and literal text
+///   (`{item_id}.png`) keeps only its literal text (`png`) and counts as a
+///   parameter for the action.
+/// - Action: `GET` ending with a parameter -> `get`; other `GET` -> `list` when
+///   the last segment looks like a collection (`users`, `logs`, `search`),
+///   else `get` (`health`, `me`); `POST` -> `create`, `PUT` -> `replace`,
+///   `PATCH` -> `update`, `DELETE` -> `delete`, other methods -> lower-case
+///   method name.
+/// - The action is not repeated when the last static segment already is the
+///   action or a synonym (`/sessions/create` -> `sessions.create`).
+pub fn endpoint_id(method: &str, path: &str) -> String {
+    let segs = meaningful_segments(path);
+    let action = action_of(method, last_segment(path));
+    let last = last_segment(path).filter(|s| !has_param(s));
+    let redundant = !segs.is_empty()
+        && last.is_some()
+        && segs
+            .last()
+            .is_some_and(|l| action_synonyms(&action).contains(&l.as_str()));
+    if segs.is_empty() {
+        format!("root.{}", action)
+    } else if redundant {
+        segs.join(".")
+    } else {
+        format!("{}.{}", segs.join("."), action)
+    }
+}
+
+/// The disambiguated id: every segment including the `api` / `vN` prefix, with
+/// parameter names at their positions, and the action always appended.
+/// `GET /api/users/{id}/posts` -> `api.users.id.posts.list`.
+pub fn endpoint_id_full(method: &str, path: &str) -> String {
+    let mut parts: Vec<String> = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if is_param(s) {
+                sanitize_param(&s[1..s.len() - 1])
+            } else {
+                sanitize(s)
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        parts.push("root".to_string());
+    }
+    format!(
+        "{}.{}",
+        parts.join("."),
+        action_of(method, last_segment(path))
+    )
 }
 
 /// Make `id` unique against `taken` by appending `-2`, `-3`, ...
@@ -243,6 +382,63 @@ pub fn unique_id(id: &str, taken: &std::collections::HashSet<String>) -> String 
     }
 }
 
+/// Assign ids to a batch of new `(method, path)` routes, independent of their
+/// order, against ids already `taken` (existing files; not modified).
+///
+/// 1. Routes with a unique [`endpoint_id`] that is not taken keep it.
+/// 2. When several routes share a base id, the "plain" one (no dropped prefix
+///    and no parameter, i.e. whose [`endpoint_id_full`] equals the base) keeps
+///    it; the others get [`endpoint_id_full`]
+///    (`medical.offices.users.list` vs
+///    `medical.offices.medical-office-id.users.list`, `health.list` vs
+///    `api.health.list`). If no route is plain, all get the full form. A base
+///    id that is already taken is never reused.
+/// 3. Anything still identical gets `-2`, `-3`, ... in `(path, method)` order.
+pub fn assign_ids(
+    routes: &[(String, String)],
+    taken: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+    let bases: Vec<String> = routes.iter().map(|(m, p)| endpoint_id(m, p)).collect();
+    let fulls: Vec<String> = routes.iter().map(|(m, p)| endpoint_id_full(m, p)).collect();
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, b) in bases.iter().enumerate() {
+        groups.entry(b).or_default().push(i);
+    }
+    let mut chosen: Vec<Option<String>> = vec![None; routes.len()];
+    let mut used: HashSet<String> = taken.clone();
+    let mut rest: Vec<usize> = Vec::new();
+    for (base, members) in &groups {
+        let base_free = !taken.contains(*base);
+        let keepers: Vec<usize> = if members.len() == 1 {
+            members.clone()
+        } else {
+            members
+                .iter()
+                .copied()
+                .filter(|&i| fulls[i] == **base)
+                .collect()
+        };
+        if base_free && keepers.len() == 1 {
+            let k = keepers[0];
+            chosen[k] = Some(base.to_string());
+            used.insert(base.to_string());
+        }
+        for &i in members {
+            if chosen[i].is_none() {
+                rest.push(i);
+            }
+        }
+    }
+    rest.sort_by(|&a, &b| (&routes[a].1, &routes[a].0, a).cmp(&(&routes[b].1, &routes[b].0, b)));
+    for i in rest {
+        let id = unique_id(&fulls[i], &used);
+        used.insert(id.clone());
+        chosen[i] = Some(id);
+    }
+    chosen.into_iter().map(|c| c.unwrap_or_default()).collect()
+}
+
 /// Slug used for snapshot file names and JUnit test names.
 pub fn slug(s: &str) -> String {
     let mut out = String::new();
@@ -258,6 +454,18 @@ pub fn slug(s: &str) -> String {
         "test".into()
     } else {
         out
+    }
+}
+
+/// Like [`normalize_path`], but keeps a trailing `/` (except for the root
+/// path). FastAPI / Starlette treat `/items` and `/items/` as different routes
+/// (the other one answers with a redirect), so the exact form must survive.
+pub fn normalize_path_keep_slash(raw: &str) -> String {
+    let p = normalize_path(raw);
+    if raw.ends_with('/') && p != "/" {
+        format!("{}/", p)
+    } else {
+        p
     }
 }
 
@@ -315,6 +523,114 @@ mod tests {
         assert_eq!(path_params("/a/{x}/b/{y}"), vec!["x", "y"]);
         assert_eq!(slug("メール重複は409"), "メール重複は409");
         assert_eq!(slug("Creates a user!"), "creates-a-user");
+    }
+
+    #[test]
+    fn collection_heuristic_for_static_get() {
+        assert_eq!(endpoint_id("GET", "/users"), "users.list");
+        assert_eq!(endpoint_id("GET", "/users/{id}"), "users.get");
+        assert_eq!(endpoint_id("GET", "/health"), "health.get");
+        assert_eq!(endpoint_id("GET", "/auth/users/me"), "auth.users.me.get");
+        assert_eq!(
+            endpoint_id("GET", "/candidates/detail"),
+            "candidates.detail.get"
+        );
+        assert_eq!(endpoint_id("GET", "/rooms/stream"), "rooms.stream.get");
+        assert_eq!(endpoint_id("GET", "/bimi/logo.svg"), "bimi.logo-svg.get");
+        assert_eq!(
+            endpoint_id("GET", "/waitlist/challenge"),
+            "waitlist.challenge.get"
+        );
+        assert_eq!(endpoint_id("GET", "/admin/status"), "admin.status.get");
+        assert_eq!(endpoint_id("GET", "/items/search"), "items.search.list");
+        assert_eq!(endpoint_id("GET", "/chat/history"), "chat.history.list");
+        assert_eq!(endpoint_id("GET", "/audit-logs"), "audit-logs.list");
+    }
+
+    #[test]
+    fn does_not_double_the_verb() {
+        assert_eq!(
+            endpoint_id("POST", "/medical/offers/create"),
+            "medical.offers.create"
+        );
+        assert_eq!(endpoint_id("DELETE", "/offers/delete"), "offers.delete");
+        assert_eq!(endpoint_id("DELETE", "/offers/remove"), "offers.remove");
+        assert_eq!(
+            endpoint_id("GET", "/admin/quiz/units/list"),
+            "admin.quiz.units.list"
+        );
+        assert_eq!(
+            endpoint_id("GET", "/student/friend/list"),
+            "student.friend.list"
+        );
+        assert_eq!(
+            endpoint_id("POST", "/oral-exam/sessions/add"),
+            "oral-exam.sessions.add"
+        );
+        assert_eq!(endpoint_id("PATCH", "/users/edit"), "users.edit");
+        // not redundant when a parameter follows
+        assert_eq!(endpoint_id("GET", "/users/list/{id}"), "users.list.get");
+        assert_eq!(endpoint_id("POST", "/auth/login"), "auth.login.create");
+    }
+
+    #[test]
+    fn mixed_param_and_literal_segments() {
+        assert_eq!(
+            endpoint_id("GET", "/w/og/{kind}/{item_id}.png"),
+            "w.og.png.get"
+        );
+        assert_eq!(endpoint_id("GET", "/files/{name}.json"), "files.json.get");
+        assert_eq!(endpoint_id("GET", "/{id}.json"), "json.get");
+        assert_eq!(
+            endpoint_id_full("GET", "/w/og/{kind}/{item_id}.png"),
+            "w.og.kind.item-id-png.get"
+        );
+    }
+
+    fn ids(routes: &[(&str, &str)], taken: &[&str]) -> Vec<String> {
+        let r: Vec<(String, String)> = routes
+            .iter()
+            .map(|(m, p)| (m.to_string(), p.to_string()))
+            .collect();
+        let t = taken.iter().map(|s| s.to_string()).collect();
+        assign_ids(&r, &t)
+    }
+
+    #[test]
+    fn collisions_are_order_independent() {
+        let a = ("GET", "/medical/offices/users");
+        let b = ("GET", "/medical/offices/{medical_office_id}/users");
+        let want_a = "medical.offices.users.list";
+        let want_b = "medical.offices.medical-office-id.users.list";
+        assert_eq!(ids(&[a, b], &[]), vec![want_a, want_b]);
+        assert_eq!(ids(&[b, a], &[]), vec![want_b, want_a]);
+
+        let h1 = ("GET", "/api/health");
+        let h2 = ("GET", "/health");
+        assert_eq!(ids(&[h1, h2], &[]), vec!["api.health.get", "health.get"]);
+        assert_eq!(ids(&[h2, h1], &[]), vec!["health.get", "api.health.get"]);
+
+        // no plain route: all get the full form
+        assert_eq!(
+            ids(&[("GET", "/api/users"), ("GET", "/v1/users")], &[]),
+            vec!["api.users.list", "v1.users.list"]
+        );
+        // base taken by an existing file: new route is disambiguated
+        assert_eq!(ids(&[h2], &["health.get"]), vec!["health.get-2"]);
+        assert_eq!(ids(&[h1], &["health.get"]), vec!["api.health.get"]);
+        // identical routes fall back to numeric suffixes
+        assert_eq!(
+            ids(&[("GET", "/users"), ("GET", "/users")], &[]),
+            vec!["users.list", "users.list-2"]
+        );
+    }
+
+    #[test]
+    fn verb_collisions_use_full_form() {
+        assert_eq!(
+            ids(&[("POST", "/users/create"), ("POST", "/users")], &[]),
+            vec!["users.create.create", "users.create"]
+        );
     }
 
     #[test]
