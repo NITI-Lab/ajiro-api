@@ -287,7 +287,8 @@ fn colliding_ids_and_file_names_get_suffixes() {
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 4);
-    assert!(ids.contains(&"users.get-2".to_string()));
+    assert!(ids.contains(&"users.id.get".to_string()));
+    assert!(ids.contains(&"users.userid.get".to_string()));
     let mut files: Vec<_> = r.endpoints.iter().map(|e| e.file.clone()).collect();
     files.sort();
     files.dedup();
@@ -295,6 +296,52 @@ fn colliding_ids_and_file_names_get_suffixes() {
     assert!(files.contains(&"api/a/get-a-b-c-2.yaml".to_string()));
     let r2 = scan(dir.path(), false);
     assert_eq!((r2.created, r2.updated, r2.unchanged), (0, 0, 4));
+}
+
+fn ids_by_route(index: &str) -> Vec<(String, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "package.json",
+        r#"{"dependencies":{"hono":"4"}}"#,
+    );
+    write(dir.path(), "src/index.ts", index);
+    init::run_cli(dir.path(), &init_args()).unwrap();
+    let r = scan(dir.path(), false);
+    let mut v: Vec<_> = r
+        .endpoints
+        .iter()
+        .map(|e| (format!("{} {}", e.method, e.path), e.id.clone()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn colliding_ids_do_not_depend_on_declaration_order() {
+    let head = "import { Hono } from 'hono';\nconst app = new Hono();\n";
+    let a = "app.get('/medical/offices/users', a);\napp.get('/medical/offices/:medical_office_id/users', b);\napp.get('/health', c);\napp.get('/api/health', d);\n";
+    let b = "app.get('/api/health', d);\napp.get('/health', c);\napp.get('/medical/offices/:medical_office_id/users', b);\napp.get('/medical/offices/users', a);\n";
+    let first = ids_by_route(&format!("{head}{a}"));
+    let second = ids_by_route(&format!("{head}{b}"));
+    assert_eq!(first, second);
+    let get = |route: &str| {
+        first
+            .iter()
+            .find(|(r, _)| r == route)
+            .map(|(_, id)| id.as_str())
+            .unwrap()
+    };
+    assert_eq!(
+        get("GET /medical/offices/users"),
+        "medical.offices.users.list"
+    );
+    assert_eq!(
+        get("GET /medical/offices/{medical_office_id}/users"),
+        "medical.offices.medical-office-id.users.list"
+    );
+    assert_eq!(get("GET /health"), "health.get");
+    assert_eq!(get("GET /api/health"), "api.health.get");
 }
 
 #[test]
