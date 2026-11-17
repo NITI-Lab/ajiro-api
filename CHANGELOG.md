@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-18
+
+### Changed
+
+- Package metadata: the npm README is a full introduction (demo, quick start, YAML example, Claude Code / MCP / Codex setup, commands), the npm and crates.io descriptions and keywords cover what the tool does, the platform packages get keywords and a README pointing to `ajiro-api`, and the homepage is https://nititech.jp/ (the repository link is unchanged).
+
 ## [0.2.1] - 2026-11-18
 
 ### Added
