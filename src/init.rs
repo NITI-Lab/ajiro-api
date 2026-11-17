@@ -99,6 +99,9 @@ pub fn detect_framework(root: &Path) -> Option<String> {
 }
 
 fn default_base_url(root: &Path, framework: Option<&str>) -> String {
+    if let Some((port, _)) = detect_port(root) {
+        return format!("http://localhost:{}", port);
+    }
     let port = match framework {
         Some("fastapi") => 8000,
         Some(f) if f.starts_with("go-") => 8080,
@@ -112,6 +115,117 @@ fn default_base_url(root: &Path, framework: Option<&str>) -> String {
         _ => 3000,
     };
     format!("http://localhost:{}", port)
+}
+
+/// Find the port the dev server listens on, with the file it came from.
+///
+/// Looks at (in order of trust): `PORT=` in `.env.example` / `.env`
+/// (only that line is read), `--port` / `-p` in package.json scripts and
+/// Dockerfiles, then source code: `serve({ port: 8000 })`,
+/// `process.env.PORT ?? 8000`, `.listen(8000)`, `uvicorn.run(..., port=8000)`,
+/// `ListenAndServe(":8080")`, `e.Start(":8080")`. Entry-point files win over
+/// other files; within a tier the most frequent port wins.
+pub fn detect_port(root: &Path) -> Option<(u16, String)> {
+    use regex::Regex;
+    use std::collections::HashMap;
+
+    let valid = |p: &str| p.parse::<u16>().ok().filter(|p| *p >= 80);
+
+    // 1. dotenv files: PORT=8000
+    let env_re = Regex::new(r"(?m)^\s*(?:export\s+)?PORT\s*=\s*[\x22']?(\d{2,5})").unwrap();
+    for f in [".env.example", ".env.sample", ".env.local", ".env"] {
+        if let Ok(t) = std::fs::read_to_string(root.join(f)) {
+            if let Some(p) = env_re.captures(&t).and_then(|c| valid(&c[1])) {
+                return Some((p, f.to_string()));
+            }
+        }
+    }
+    // 2. scripts: "dev": "next dev -p 4000", uvicorn --port 8000
+    let flag_re = Regex::new(r"(?:--port[ =]|\s-p\s+)(\d{2,5})\b").unwrap();
+    for f in [
+        "package.json",
+        "Dockerfile",
+        "docker-compose.yml",
+        "compose.yaml",
+        "Makefile",
+        "Procfile",
+    ] {
+        if let Ok(t) = std::fs::read_to_string(root.join(f)) {
+            if let Some(p) = flag_re.captures(&t).and_then(|c| valid(&c[1])) {
+                return Some((p, f.to_string()));
+            }
+        }
+    }
+    // 3. source code
+    let code_res = [
+        // serve({ fetch: app.fetch, port: 8000 }), const port = 8000, port=8000
+        Regex::new(r"(?i)\bport\b\s*[:=]\s*(?:Number\([^)]*\)\s*\|\|\s*)?(\d{2,5})\b").unwrap(),
+        // process.env.PORT ?? 8000 / || "8000" / os.getenv("PORT", "8000")
+        Regex::new(r#"PORT[\x22')\]]*\s*(?:\?\?|\|\||,)\s*[\x22']?(\d{2,5})"#).unwrap(),
+        // app.listen(8000)
+        Regex::new(r"\.listen\(\s*(\d{2,5})\b").unwrap(),
+        // http.ListenAndServe(":8080"), e.Start(":8080"), r.Run(":8080")
+        Regex::new(r#"(?:ListenAndServe|Start|Run|Listen)\(\s*"[^":]*:(\d{2,5})""#).unwrap(),
+    ];
+    let entry_names = ["index", "server", "main", "app", "serve", "dev"];
+    let skip = [
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".next",
+        "target",
+        "vendor",
+        "venv",
+        ".venv",
+        "__pycache__",
+        "coverage",
+        "test",
+        "tests",
+        "__tests__",
+    ];
+    let mut tiers: [HashMap<u16, (usize, String)>; 2] = [HashMap::new(), HashMap::new()];
+    let walker = walkdir::WalkDir::new(root)
+        .max_depth(6)
+        .into_iter()
+        .filter_entry(|e| !skip.iter().any(|s| e.file_name() == *s));
+    for e in walker.filter_map(|e| e.ok()).take(5000) {
+        let path = e.path();
+        let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
+        if !matches!(ext, "ts" | "js" | "mjs" | "cjs" | "py" | "go")
+            || path.to_string_lossy().contains(".test.")
+            || path.to_string_lossy().contains(".spec.")
+            || e.metadata().map(|m| m.len() > 256 * 1024).unwrap_or(true)
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let tier = if entry_names.contains(&stem) { 0 } else { 1 };
+        for re in &code_res {
+            for c in re.captures_iter(&text) {
+                if let Some(p) = valid(&c[1]) {
+                    let rel = path
+                        .strip_prefix(root)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    tiers[tier].entry(p).or_insert((0, rel)).0 += 1;
+                }
+            }
+        }
+    }
+    for tier in tiers {
+        if let Some((p, (_, file))) = tier
+            .into_iter()
+            .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then(b.0.cmp(&a.0)))
+        {
+            return Some((p, file));
+        }
+    }
+    None
 }
 
 fn default_sources(root: &Path, framework: Option<&str>) -> Vec<String> {
@@ -286,7 +400,14 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
         println!("updated {} (added .env)", u);
     }
     match &framework {
-        Some(f) => println!("framework: {} (base_url {})", f, base_url),
+        Some(f) => {
+            let origin = match (&args.base_url, detect_port(root)) {
+                (Some(_), _) => "from --base-url".to_string(),
+                (None, Some((_, file))) => format!("port detected in {}", file),
+                (None, None) => "framework default; change it in ajiro-api.yaml if needed".into(),
+            };
+            println!("framework: {} (base_url {}, {})", f, base_url, origin)
+        }
         None => println!(
             "warning: could not detect the framework. Set `framework` in {} or run `ajiro-api scan --framework <name>`.",
             CONFIG_FILE

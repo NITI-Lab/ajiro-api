@@ -4,6 +4,15 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- `openapi import` (and Postman/Bruno import) no longer drops an endpoint whose file name collides with another one (`/a/b-c` vs `/a/b/c`); the second file gets a `-2` suffix.
+- Closing stdout early (`ajiro-api list | head`) no longer panics with "Broken pipe".
+
+### Changed
+
+- `init` detects the dev server port (`.env.example` `PORT=`, `-p`/`--port` in scripts, `serve({ port })`, `process.env.PORT ?? 8000`, `.listen()`, `ListenAndServe(":8080")`, `uvicorn.run(port=)`) and prints where it found it.
+
 ## [0.1.0] - 2026-11-16
 
 Initial release (Phase 1).

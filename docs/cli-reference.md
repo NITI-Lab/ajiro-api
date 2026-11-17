@@ -30,7 +30,7 @@ ajiro-api [OPTIONS] <COMMAND>
 | --- | --- |
 | `--framework <名前>` | `nextjs` `hono` `fastapi` `express` `go-nethttp` `go-chi` `go-echo`（省略時は自動判定） |
 | `--force` | 既存の `ajiro-api.yaml` を上書き |
-| `--base-url <URL>` | `local` 環境のベースURL（既定はフレームワークにより異なる） |
+| `--base-url <URL>` | `local` 環境のベースURL。省略時はポートを自動検出します（`.env.example` の `PORT=`、`package.json` の `-p`/`--port`、コード中の `serve({ port })`・`process.env.PORT ?? 8000`・`.listen(8000)`・`ListenAndServe(":8080")` など）。見つからなければフレームワークの既定値です |
 | `--json` | 機械向け出力 |
 
 ## scan
