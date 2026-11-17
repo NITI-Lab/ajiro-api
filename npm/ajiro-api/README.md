@@ -8,7 +8,7 @@ npx -y ajiro-api scan
 npx -y ajiro-api test
 ```
 
-This package is a small launcher. The native binary comes from the platform package (`@ajiro-api/cli-<platform>-<arch>`) installed automatically as an optional dependency. Supported: Linux x64/arm64, macOS x64/arm64, Windows x64. Elsewhere use `cargo install ajiro-api` or the [GitHub Releases](https://github.com/niti-lab/ajiro-api/releases).
+This package is a small launcher. The native binary comes from the platform package (`@niti-lab/ajiro-api-<platform>-<arch>`) installed automatically as an optional dependency. Supported: Linux x64/arm64, macOS x64/arm64, Windows x64. Elsewhere use `cargo install ajiro-api` or the [GitHub Releases](https://github.com/niti-lab/ajiro-api/releases).
 
 Documentation: https://github.com/niti-lab/ajiro-api
 
