@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-17
+
 ### Fixed
 
 - `openapi import` (and Postman/Bruno import) no longer drops an endpoint whose file name collides with another one (`/a/b-c` vs `/a/b/c`); the second file gets a `-2` suffix.
@@ -11,6 +13,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Changed
 
+- Hono scan supports `@hono/zod-openapi` projects: apps created by factory functions (`createApp().basePath("/api")`, transitively and across files), `createRoute({...})` defined in other files and registered with `.openapi(route, handler)` (named, namespace and re-exported imports), template-literal paths built from string consts, `routes.forEach(r => app.route("/", r))` mounts and `app.doc()`. `createRoute` definitions that cannot be tied to an app are still emitted, with a warning. A scan that finds no routes now suggests `openapi import`.
 - `init` detects the dev server port (`.env.example` `PORT=`, `-p`/`--port` in scripts, `serve({ port })`, `process.env.PORT ?? 8000`, `.listen()`, `ListenAndServe(":8080")`, `uvicorn.run(port=)`) and prints where it found it.
 
 ## [0.1.0] - 2026-11-16
