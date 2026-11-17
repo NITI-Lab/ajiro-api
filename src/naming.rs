@@ -442,6 +442,18 @@ pub fn slug(s: &str) -> String {
     }
 }
 
+/// Like [`normalize_path`], but keeps a trailing `/` (except for the root
+/// path). FastAPI / Starlette treat `/items` and `/items/` as different routes
+/// (the other one answers with a redirect), so the exact form must survive.
+pub fn normalize_path_keep_slash(raw: &str) -> String {
+    let p = normalize_path(raw);
+    if raw.ends_with('/') && p != "/" {
+        format!("{}/", p)
+    } else {
+        p
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

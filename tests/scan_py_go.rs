@@ -78,19 +78,27 @@ fn fastapi_project() {
         "GET /ping app/main.py:30 health - fastapi",
         "OPTIONS /admin/stats app/routers/admin/stats.py:6 stats_options window fastapi",
         "GET /admin/stats/{name} app/routers/admin/stats.py:11 stats since,flag fastapi",
-        "GET /api/items app/routers/items.py:9 list_items page,size fastapi",
-        "GET /api/items/v2/{item_id}/reviews app/routers/items.py:14 list_reviews stars fastapi",
-        "POST /api/items/v2/{item_id}/reviews app/routers/items.py:19 add_review - fastapi",
-        "HEAD /orphans/{oid} app/routers/orphan.py:6 head_orphan - fastapi",
-        "PATCH /orphans/{oid} app/routers/orphan.py:11 patch_orphan note fastapi",
-        "GET /orphans/files/{file_path} app/routers/orphan.py:16 get_file - fastapi",
-        "GET /api/v1/users app/routers/users.py:11 list_users limit,offset,role,tags fastapi",
+        "GET /api/items/ app/routers/items.py:9 list_items page,size fastapi",
+        "GET /api/items/v2/{item_id}/reviews/ app/routers/items.py:14 list_reviews stars fastapi",
+        "POST /api/items/v2/{item_id}/reviews/ app/routers/items.py:19 add_review - fastapi",
+        "GET /api/v1/users/ app/routers/users.py:11 list_users limit,offset,role,tags fastapi",
         "POST /api/v1/users app/routers/users.py:24 create_user dry_run fastapi",
         "GET /api/v1/users/{user_id} app/routers/users.py:29 get_user verbose,q fastapi",
         "PUT /api/v1/users/{user_id} app/routers/users.py:34 replace_user - fastapi",
         "DELETE /api/v1/users/{user_id} app/routers/users.py:39 delete_user force fastapi",
         ],
         &scan_py(&root),
+    );
+}
+
+#[test]
+fn fastapi_router_never_included_is_skipped() {
+    let root = fixture("fastapi");
+    let (routes, warnings) = fastapi::scan_with_warnings(&root, &collect(&root)).unwrap();
+    assert!(routes.iter().all(|r| !r.path.starts_with("/orphans")));
+    assert!(
+        warnings.iter().any(|w| w.contains("orphan.py")),
+        "{warnings:?}"
     );
 }
 
