@@ -259,3 +259,170 @@ fn express_query_destructuring_and_node_modules() {
         text
     );
 }
+
+#[test]
+fn hono_openapi_factories_createroute_and_openapi_chains() {
+    let r = scan_project(
+        &project(&fixture("hono-openapi"), "hono"),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&r),
+        vec![
+            "GET /api src/routes/root/root.index.ts:6",
+            "GET /api/admin/stats src/router/admin.ts:5",
+            "GET /api/health src/router/index.ts:5",
+            "GET /api/users src/routes/users/users.index.ts:7",
+            "POST /api/users src/routes/users/users.index.ts:8",
+            "DELETE /api/users/{id} src/routes/users/users.index.ts:10",
+            "GET /api/users/{id} src/routes/users/users.index.ts:9",
+            "POST /api/v1/reports src/routes/reports/reports.index.ts:10",
+            "GET /api/v1/reports/{id} src/routes/reports/reports.index.ts:9",
+            "GET /api/v1/tasks src/routes/tasks/tasks.index.ts:7",
+            "PATCH /api/v1/tasks/{id} src/routes/tasks/tasks.index.ts:8",
+            "GET /doc src/lib/configure-open-api.ts:6",
+            "GET /legacy/ping src/routes/legacy.routes.ts:4",
+            "GET /reference src/lib/configure-open-api.ts:11",
+        ]
+    );
+    assert!(r.endpoints.iter().all(|e| e.source.framework == "hono"));
+    // The orphan createRoute() is reported, not silently emitted.
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.starts_with("1 createRoute() definition(s)")
+                && w.contains("no mount prefixes")),
+        "{:?}",
+        r.warnings
+    );
+    // A template literal with a non-const substitution is skipped loudly.
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("reports.routes.ts:") && w.contains("not statically known")),
+        "{:?}",
+        r.warnings
+    );
+    let find = |p: &str, m: &str| {
+        r.endpoints
+            .iter()
+            .find(|e| e.path == p && e.method == m)
+            .unwrap()
+    };
+    assert_eq!(
+        find("/api/users", "GET").source.handler.as_deref(),
+        Some("handlers.list")
+    );
+}
+
+#[test]
+fn hono_unconnected_createroute_is_emitted_with_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.routes.ts"),
+        "import { createRoute } from '@hono/zod-openapi';\nexport const a = createRoute({ method: 'get', path: '/a/{id}' });\nexport const b = createRoute({ method: 'post', path: `/b` });\n",
+    )
+    .unwrap();
+    let r = scan_project(
+        &project(dir.path(), "hono"),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&r),
+        vec!["GET /a/{id} a.routes.ts:2", "POST /b a.routes.ts:3"]
+    );
+    assert!(r
+        .warnings
+        .iter()
+        .any(|w| w.starts_with("2 createRoute() definition(s)")));
+}
+
+#[test]
+fn hono_zero_routes_hints_at_openapi_import() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        "{\"dependencies\":{\"@hono/zod-openapi\":\"0.18.0\"}}",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("a.ts"), "export const x = 1;\n").unwrap();
+    let r = scan_project(
+        &project(dir.path(), "hono"),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(r.endpoints.is_empty());
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("no hono routes found") && w.contains("ajiro-api openapi import")),
+        "{:?}",
+        r.warnings
+    );
+}
+
+#[test]
+fn hono_factory_variants_and_mount_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let w = |name: &str, text: &str| {
+        let p = dir.path().join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    // Arrow factory with a return type annotation, behind a transitive wrapper.
+    w(
+        "src/lib/factory.ts",
+        "import { Hono } from 'hono';\nexport const base = (): Hono => buildIt();\nexport const make = () => base();\n",
+    );
+    // Anonymous default export factory.
+    w(
+        "src/lib/anon.ts",
+        "import { OpenAPIHono } from '@hono/zod-openapi';\nexport default () => new OpenAPIHono();\n",
+    );
+    w("src/lib/consts.ts", "export const PREFIX = '/pre';\n");
+    w(
+        "src/routers/a.ts",
+        "import make from '../lib/anon';\nimport { PREFIX } from '../lib/consts';\nconst a = make();\na.get(`${PREFIX}/a`, (c) => c.text('a'));\nexport default a;\n",
+    );
+    w(
+        "src/routers/b.ts",
+        "import { make } from '../lib/factory';\nexport const b = make();\nb.post('/b', (c) => c.text('b'));\n",
+    );
+    w(
+        "src/routers/index.ts",
+        "export { default as a } from './a';\nexport * from './b';\n",
+    );
+    w(
+        "src/app.ts",
+        "import { make } from './lib/factory';\nimport * as r from './routers';\nimport { a, b } from './routers';\nconst app = make().basePath('/x');\nconst list = [a, b];\nfor (const router of list) {\n  app.route('/loop', router);\n}\napp.route('/ns', r.a);\nexport default app;\n",
+    );
+    let r = scan_project(
+        &project(dir.path(), "hono"),
+        &ScanOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&r),
+        vec![
+            "POST /x/loop/b src/routers/b.ts:3",
+            "GET /x/loop/pre/a src/routers/a.ts:4",
+            "GET /x/ns/pre/a src/routers/a.ts:4",
+        ],
+        "{:?}",
+        r.warnings
+    );
+}

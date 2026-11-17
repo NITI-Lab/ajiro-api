@@ -5,7 +5,7 @@ import { items } from './routes/items.js';
 import admin from './routes/admin';
 
 const app = new Hono();
-const dynamic = 'x';
+const dynamic = process.env.DYN;
 
 app.get('/health', (c) => c.json({ ok: true }));
 app.all('/any', (c) => c.text('any'));

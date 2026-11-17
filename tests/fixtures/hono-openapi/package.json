@@ -1,0 +1,4 @@
+{
+  "name": "hono-openapi-fixture",
+  "dependencies": { "hono": "4.6.0", "@hono/zod-openapi": "0.18.0", "@scalar/hono-api-reference": "0.5.0" }
+}

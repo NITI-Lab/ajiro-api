@@ -255,6 +255,19 @@ fn update_source_text(text: &str, new: &SourceInfo, had_source: bool) -> Option<
     Some(out)
 }
 
+/// Whether the project depends on `@hono/zod-openapi` (package.json, or an
+/// import in a scanned file). Only called when a scan found nothing.
+fn uses_hono_openapi(root: &Path, files: &[PathBuf]) -> bool {
+    let needle = "zod-openapi";
+    if std::fs::read_to_string(root.join("package.json")).is_ok_and(|t| t.contains(needle)) {
+        return true;
+    }
+    files
+        .iter()
+        .filter(|f| ts_common::is_ts_source(f))
+        .any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains(needle)))
+}
+
 fn run_framework(
     framework: &str,
     project: &Project,
@@ -298,11 +311,18 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     routes.sort_by(|a, b| (&a.path, &a.method).cmp(&(&b.path, &b.method)));
     routes.dedup_by(|b, a| a.path == b.path && a.method == b.method);
     if routes.is_empty() {
-        warnings.push(format!(
+        let mut msg = format!(
             "no {} routes found in {} scanned files",
             framework,
             files.len()
-        ));
+        );
+        if framework == "hono" && uses_hono_openapi(&project.root, &files) {
+            msg.push_str(
+                ". This project uses @hono/zod-openapi: if the app serves an OpenAPI document, \
+                 `ajiro-api openapi import <openapi.json>` can create the endpoint files from it instead",
+            );
+        }
+        warnings.push(msg);
     }
 
     // Existing endpoint files.
