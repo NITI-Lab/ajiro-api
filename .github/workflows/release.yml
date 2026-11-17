@@ -24,7 +24,7 @@ jobs:
           - { target: aarch64-apple-darwin, os: macos-latest, use_cross: false }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, use_cross: false }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -72,7 +72,7 @@ jobs:
           fi
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: |
@@ -85,7 +85,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: dist
@@ -96,7 +96,7 @@ jobs:
           cat *.sha256 > SHA256SUMS
           ls -l
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
@@ -111,14 +111,14 @@ jobs:
       - name: Check for NPM_TOKEN
         run: |
           if [ -z "$NPM_TOKEN" ]; then echo "NPM_TOKEN is not set; skipping npm publish."; fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.NPM_TOKEN != ''
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: env.NPM_TOKEN != ''
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.NPM_TOKEN != ''
         with:
           pattern: dist-*
@@ -150,7 +150,7 @@ jobs:
       - name: Check for CARGO_REGISTRY_TOKEN
         run: |
           if [ -z "$CARGO_REGISTRY_TOKEN" ]; then echo "CARGO_REGISTRY_TOKEN is not set; skipping crates.io publish."; fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.CARGO_REGISTRY_TOKEN != ''
       - uses: dtolnay/rust-toolchain@stable
         if: env.CARGO_REGISTRY_TOKEN != ''
@@ -167,9 +167,9 @@ jobs:
       - name: Check for HOMEBREW_TAP_TOKEN
         run: |
           if [ -z "$TAP_TOKEN" ]; then echo "HOMEBREW_TAP_TOKEN is not set; skipping Homebrew tap update."; fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.TAP_TOKEN != ''
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.TAP_TOKEN != ''
         with:
           pattern: dist-*
