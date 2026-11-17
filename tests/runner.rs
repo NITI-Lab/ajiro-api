@@ -475,7 +475,6 @@ tests:
       status: [200, 201]
       body:
         match:
-          $.total: 2
           $["total"]: 2
           $.items[0].name: apple
           $.items[0].price: { $type: number }

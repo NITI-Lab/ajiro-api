@@ -61,7 +61,7 @@ const SCHEMA_URL: &str =
 
 /// Render a string as a YAML scalar (quoted only when needed).
 pub(crate) fn yaml_scalar(s: &str) -> String {
-    serde_yaml::to_string(s)
+    serde_yaml_rust2::to_string(s)
         .map(|t| t.trim_end().to_string())
         .unwrap_or_else(|_| format!("{:?}", s))
 }
@@ -410,7 +410,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
             taken_ids.insert(id.clone());
             taken_paths.insert(path.clone());
             let text = render_new_file(&id, route, &source);
-            serde_yaml::from_str::<EndpointDef>(&text)
+            serde_yaml_rust2::from_str::<EndpointDef>(&text)
                 .context("internal error: generated invalid YAML")?;
             if write {
                 if let Some(parent) = path.parent() {

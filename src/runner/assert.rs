@@ -371,7 +371,8 @@ fn load_schema_file(path: &Path) -> Result<Value, String> {
         Some("yaml") | Some("yml")
     );
     if is_yaml {
-        serde_yaml::from_str(&text).map_err(|e| format!("invalid schema {}: {}", path.display(), e))
+        serde_yaml_rust2::from_str(&text)
+            .map_err(|e| format!("invalid schema {}: {}", path.display(), e))
     } else {
         serde_json::from_str(&text)
             .map_err(|e| format!("invalid JSON in schema {}: {}", path.display(), e))

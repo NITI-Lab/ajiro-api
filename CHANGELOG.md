@@ -8,6 +8,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 - **The implicit `smoke` test is only sent to GET, HEAD and OPTIONS.** Endpoints without tests whose method may change data (POST, PUT, PATCH, DELETE) are now skipped with a reason, instead of receiving an empty request that could log out, overwrite or create data on the server under test. Pass `ajiro-api test --smoke-unsafe` (MCP: `smoke_unsafe: true`) for the previous behaviour.
 - Environment `headers` are rendered per request, so they can use values captured during the run (e.g. `Cookie: "session={{ session }}"`). `{{ env.X }}` still has to resolve when the run starts.
+- **YAML is read and written with [serde-yaml-rust2](https://crates.io/crates/serde-yaml-rust2)** (pure Rust, no `unsafe`) instead of the archived `serde_yaml` / `unsafe-libyaml`. A mapping with the same key twice (for example two `$.total` entries under `match`) is now an error instead of the last entry silently replacing the earlier one. Files written by `openapi import`, `postman import` and `bruno import` indent sequences under their key (`tags:\n  - a`), like the files `init` and the examples use.
 
 ### Added
 
