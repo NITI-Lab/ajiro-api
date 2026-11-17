@@ -54,7 +54,8 @@ After implementing or changing endpoints:
 - **Do not weaken assertions just to get green.** Do not delete failing tests, loosen status checks, or add `skip: true` to hide a real bug. If a test is wrong, fix it to express the intended behaviour.
 - **Update snapshots only when the change is intended**: `ajiro-api test -u` overwrites stored snapshots. Review the diff of `api/__snapshots__/` before committing.
 - Tests that create data should use unique values (`{{ $randomEmail }}`, `{{ $uuid }}`) so re-runs do not collide.
-- An endpoint with empty `tests` only gets an implicit `smoke` test (status < 500). That is not enough for new work.
+- An endpoint with empty `tests` only gets an implicit `smoke` test (status < 500), and only for GET/HEAD/OPTIONS: POST/PUT/PATCH/DELETE are skipped unless `--smoke-unsafe`. That is not enough for new work.
+- **When most endpoints need a login**, put the login endpoint in the environment `setup` and send the captured token or cookie (`cookie:<name>` capture) through the environment `headers`, instead of adding `depends_on` to every file.
 
 ## 3. Other commands
 

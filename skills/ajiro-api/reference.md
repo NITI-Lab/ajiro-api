@@ -25,7 +25,7 @@ source:                    # written by `scan`; NEVER edit
   file: src/routes/users.ts
   line: 42
   handler: createUser      # optional
-tests: []                  # yours; empty = implicit smoke test (status < 500)
+tests: []                  # yours; empty = implicit smoke test (status < 500; GET/HEAD/OPTIONS only unless --smoke-unsafe)
 mock: {}                   # yours; used by `ajiro-api mock`
 ```
 
@@ -53,7 +53,7 @@ tests:
       ignore: [$.id, $.createdAt]   # excluded from equals/snapshot
       max_ms: 500
     capture:
-      userId: $.id                  # $.jsonpath | header:Name | status | body
+      userId: $.id                  # $.jsonpath | header:Name | cookie:name | status | body
       location: header:Location
     skip: false
     only_env: [local, ci]           # empty = all environments
@@ -115,7 +115,9 @@ environments:
   local:
     base_url: http://localhost:3000
     variables: { adminPassword: "{{ env.ADMIN_PASSWORD }}" }
-    headers: {}            # sent with every request
+    setup: [auth.login.create]   # run first (with their depends_on), even with a filter; failure stops the run
+    headers:               # sent with every request; rendered per request, so captures work
+      Authorization: "Bearer {{ token }}"   # left out while setup has not captured it yet
   ci:
     base_url: http://localhost:3000
     env_file: .env.ci

@@ -49,7 +49,7 @@ ajiro-api scan            # ルーティングを読み取り、api/ にYAMLを�
 ajiro-api test            # 全エンドポイントを実行して検証
 ```
 
-`tests:` が空のエンドポイントには、ステータスが500未満であることを確認する `smoke` テストが自動で適用されます。
+`tests:` が空のエンドポイントには、ステータスが500未満であることを確認する `smoke` テストが自動で適用されます。データを変えうる POST・PUT・PATCH・DELETE には送らず、スキップします（送るときは `ajiro-api test --smoke-unsafe`）。ログインが必要なAPIは、環境の `setup` にログインのエンドポイントを書くと最初に実行され、`capture` したトークンやCookieを環境の `headers` で全リクエストに付けられます（[YAMLリファレンス](docs/yaml-reference.md)）。
 
 ## YAMLの例
 
