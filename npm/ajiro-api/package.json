@@ -1,5 +1,6 @@
 {
   "name": "ajiro-api",
+  "mcpName": "io.github.NITI-Lab/ajiro-api",
   "version": "0.2.0",
   "description": "API definitions, regression tests and mocks for AI coding agents. Scans backend routes into YAML.",
   "keywords": ["api", "testing", "openapi", "claude-code", "codex", "mcp", "cli"],

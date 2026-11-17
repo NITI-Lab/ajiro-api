@@ -4,6 +4,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- The npm package declares `mcpName: io.github.NITI-Lab/ajiro-api`, so the MCP server can be listed in the official MCP Registry.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
