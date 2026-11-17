@@ -293,3 +293,32 @@ app.mount("/sub", sub)
     ));
     assert!(!has_warning(&warnings, &["/sub (", "mount(s): /sub"]));
 }
+
+#[test]
+fn rescan_keeps_trailing_slash_endpoints_matched() {
+    use ajiro_api::config::Project;
+    use ajiro_api::report::ScanOptions;
+    use ajiro_api::scan::scan_project;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("ajiro-api.yaml"),
+        "version: 1\nframework: fastapi\nsources: [.]\napi_dir: api\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("main.py"),
+        "from fastapi import FastAPI, APIRouter\napp = FastAPI()\nr = APIRouter(prefix=\"/items\")\n@r.get(\"/\")\ndef a(): ...\n@r.get(\"\")\ndef b(): ...\n@app.get(\"/plain/\")\ndef c(): ...\napp.include_router(r)\n",
+    )
+    .unwrap();
+    let project = Project::discover(root).unwrap();
+    let first = scan_project(&project, &ScanOptions::default()).unwrap();
+    assert_eq!(first.created, 3, "{:?}", first.endpoints);
+    let second = scan_project(&project, &ScanOptions::default()).unwrap();
+    assert_eq!(
+        (second.created, second.unchanged, second.stale.len()),
+        (0, 3, 0),
+        "{:?}",
+        second
+    );
+}

@@ -435,10 +435,10 @@ fn load_tsconfig(path: &Path, depth: u8) -> Option<RawCfg> {
 
 fn alias_cfg_in(dir: &Path) -> Option<AliasCfg> {
     for name in ["tsconfig.json", "jsconfig.json"] {
-        let p = dir.join(name);
-        if !p.is_file() {
+        if !super::dircache::has(dir, name) {
             continue;
         }
+        let p = dir.join(name);
         let Some(raw) = load_tsconfig(&p, 0) else {
             continue;
         };

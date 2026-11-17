@@ -288,7 +288,7 @@ fn colliding_ids_and_file_names_get_suffixes() {
     ids.dedup();
     assert_eq!(ids.len(), 4);
     assert!(ids.contains(&"users.id.get".to_string()));
-    assert!(ids.contains(&"users.userid.get".to_string()));
+    assert!(ids.contains(&"users.user-id.get".to_string()));
     let mut files: Vec<_> = r.endpoints.iter().map(|e| e.file.clone()).collect();
     files.sort();
     files.dedup();

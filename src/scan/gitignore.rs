@@ -49,10 +49,10 @@ impl GitFilter {
         self.matchers
             .entry(dir.to_path_buf())
             .or_insert_with(|| {
-                let f = dir.join(".gitignore");
-                if !f.is_file() {
+                if !super::dircache::has(dir, ".gitignore") {
                     return None;
                 }
+                let f = dir.join(".gitignore");
                 let mut b = GitignoreBuilder::new(dir);
                 b.add(f);
                 b.build().ok()

@@ -6,6 +6,7 @@
 //! existing ones (text based, so everything humans / AI wrote stays
 //! byte-identical).
 
+pub(crate) mod dircache;
 pub mod express;
 pub mod fastapi;
 mod gitignore;
@@ -334,7 +335,7 @@ fn run_framework(
         "nextjs" => nextjs::scan_with_warnings(root, files)?,
         "hono" => hono::scan_with_warnings(root, files)?,
         "express" => express::scan_with_warnings(root, files)?,
-        "fastapi" => (fastapi::scan(root, files)?, vec![]),
+        "fastapi" => fastapi::scan_with_warnings(root, files)?,
         "go-nethttp" | "go-chi" | "go-echo" => (go::scan(root, files)?, vec![]),
         other => bail!("unsupported framework `{}`", other),
     })
@@ -376,6 +377,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
         );
     }
 
+    dircache::clear();
     let files = collect_files(project, opts, &framework);
     let (mut routes, mut warnings) = run_framework(&framework, project, &files)?;
     for r in &mut routes {
@@ -383,13 +385,19 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     }
     // One endpoint per method + path: the first route in scanner order (which
     // follows `sources` order) wins; every dropped duplicate is reported.
+    let framework_warnings = warnings.len();
     let mut first: HashMap<(String, String), usize> = HashMap::new();
     let mut kept: Vec<Route> = Vec::with_capacity(routes.len());
     for r in routes {
         match first.get(&(r.method.clone(), r.path.clone())) {
             Some(&i) => {
                 let k = &kept[i];
-                if (k.file.as_str(), k.line) != (r.file.as_str(), r.line) {
+                // The framework scanner may already have explained this one
+                // (FastAPI reports which registration shadows which).
+                let explained = warnings[..framework_warnings]
+                    .iter()
+                    .any(|w| w.starts_with(&format!("duplicate route {} {}:", r.method, r.path)));
+                if !explained && (k.file.as_str(), k.line) != (r.file.as_str(), r.line) {
                     warnings.push(format!(
                         "duplicate route {} {}: {}:{} ignored, keeping {}:{}",
                         r.method, r.path, r.file, r.line, k.file, k.line
@@ -439,13 +447,48 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     for e in &load_errors {
         warnings.push(format!("{}: {}", e.file, e.message));
     }
+    // Match existing files by method + path, keeping a trailing slash (FastAPI
+    // serves `/items/` and `/items` as different routes). A file whose exact
+    // path no scanned route has also matches with the slash ignored, so a
+    // hand-written `/x/` still pairs with a scanned `/x` (and vice versa).
     let mut by_key: HashMap<(String, String), usize> = HashMap::new();
     for (i, e) in existing.iter().enumerate() {
         let key = (
             e.def.request.method.to_ascii_uppercase(),
-            naming::normalize_path(&e.def.request.path),
+            naming::normalize_path_keep_slash(&e.def.request.path),
         );
         by_key.entry(key).or_insert(i);
+    }
+    let scanned_keys: HashSet<(String, String)> = routes
+        .iter()
+        .map(|r| (r.method.clone(), r.path.clone()))
+        .collect();
+    let loose = |p: &str| naming::normalize_path(p);
+    let loose_scanned: HashMap<(String, String), (String, String)> = routes
+        .iter()
+        .filter(|r| r.path != loose(&r.path))
+        .map(|r| {
+            (
+                (r.method.clone(), loose(&r.path)),
+                (r.method.clone(), r.path.clone()),
+            )
+        })
+        .collect();
+    for (i, e) in existing.iter().enumerate() {
+        let method = e.def.request.method.to_ascii_uppercase();
+        let exact = naming::normalize_path_keep_slash(&e.def.request.path);
+        if scanned_keys.contains(&(method.clone(), exact.clone())) {
+            continue;
+        }
+        let lk = (method.clone(), loose(&exact));
+        // existing `/x/` -> scanned `/x`
+        if scanned_keys.contains(&lk) {
+            by_key.entry(lk.clone()).or_insert(i);
+        }
+        // existing `/x` -> scanned `/x/`
+        if let Some(sk) = loose_scanned.get(&lk) {
+            by_key.entry(sk.clone()).or_insert(i);
+        }
     }
     let taken_ids: HashSet<String> = existing.iter().map(|e| e.def.id.clone()).collect();
     let mut taken_paths: HashSet<PathBuf> = existing.iter().map(|e| e.path.clone()).collect();

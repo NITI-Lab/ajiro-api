@@ -194,6 +194,21 @@ fn sanitize(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// Like [`sanitize`], but splits camelCase first so a parameter `userId`
+/// reads `user-id` in an id.
+fn sanitize_param(s: &str) -> String {
+    let mut spaced = String::new();
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c.is_ascii_uppercase() && prev_lower {
+            spaced.push('-');
+        }
+        prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        spaced.push(c);
+    }
+    sanitize(&spaced)
+}
+
 /// Resource directory name: first meaningful segment, or `root`.
 pub fn resource_of(path: &str) -> String {
     meaningful_segments(path)
@@ -335,7 +350,7 @@ pub fn endpoint_id_full(method: &str, path: &str) -> String {
         .filter(|s| !s.is_empty())
         .map(|s| {
             if is_param(s) {
-                sanitize(&s[1..s.len() - 1])
+                sanitize_param(&s[1..s.len() - 1])
             } else {
                 sanitize(s)
             }

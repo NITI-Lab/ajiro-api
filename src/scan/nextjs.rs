@@ -29,7 +29,7 @@ pub fn scan_with_warnings(root: &Path, files: &[PathBuf]) -> Result<(Vec<Route>,
     // App roots (owner dirs) that contributed at least one route, in scan order.
     let mut app_roots: Vec<PathBuf> = Vec::new();
     let mut catch_all: Vec<String> = Vec::new();
-    for f in files.iter().filter(|f| is_ts_source(f)) {
+    for f in files.iter().filter(|f| is_ts_source(f) && may_be_route(f)) {
         let rel = rel_path(root, f);
         let owner = owners.owner_of(f);
         // Locate `app/` / `pages/api/` relative to the owning app, so that a
@@ -125,6 +125,21 @@ pub fn scan_with_warnings(root: &Path, files: &[PathBuf]) -> Result<(Vec<Route>,
     Ok((routes, warnings))
 }
 
+/// Cheap pre-filter before the owner lookup (which touches the file system):
+/// only `app/**/route.*` and `pages/api/**` files can define routes.
+fn may_be_route(f: &Path) -> bool {
+    let comps: Vec<&str> = f
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let Some((file, dirs)) = comps.split_last() else {
+        return false;
+    };
+    let stem = file.rsplit_once('.').map(|x| x.0).unwrap_or(file);
+    (stem == "route" && dirs.contains(&"app"))
+        || dirs.windows(2).any(|w| w[0] == "pages" && w[1] == "api")
+}
+
 fn is_catch_all(seg: &str) -> bool {
     seg.starts_with("[...") || seg.starts_with("[[...")
 }
@@ -143,6 +158,9 @@ struct Owners<'a> {
     root: &'a Path,
     by_dir: HashMap<PathBuf, PathBuf>,
     base_paths: HashMap<PathBuf, String>,
+    /// Per directory: (has a `next.config.*`, has a `package.json`), so each
+    /// directory is probed once (stat is slow on network / WSL mounts).
+    markers: HashMap<PathBuf, (bool, bool)>,
 }
 
 impl<'a> Owners<'a> {
@@ -151,6 +169,7 @@ impl<'a> Owners<'a> {
             root,
             by_dir: HashMap::new(),
             base_paths: HashMap::new(),
+            markers: HashMap::new(),
         }
     }
 
@@ -166,11 +185,15 @@ impl<'a> Owners<'a> {
         let mut pkg: Option<PathBuf> = None;
         let mut found: Option<PathBuf> = None;
         for a in dir.ancestors() {
-            if CONFIG_NAMES.iter().any(|n| a.join(n).is_file()) {
+            let (has_config, has_pkg) = *self
+                .markers
+                .entry(a.to_path_buf())
+                .or_insert_with(|| dir_markers(a));
+            if has_config {
                 found = Some(a.to_path_buf());
                 break;
             }
-            if pkg.is_none() && a.join("package.json").is_file() {
+            if pkg.is_none() && has_pkg {
                 pkg = Some(a.to_path_buf());
             }
             if inside && a == self.root {
@@ -195,6 +218,16 @@ impl<'a> Owners<'a> {
             naming::normalize_path(&format!("{}{}", bp, path))
         }
     }
+}
+
+/// (has a `next.config.*`, has a `package.json`) for `dir`, from one directory
+/// listing instead of seven `stat` calls.
+fn dir_markers(dir: &Path) -> (bool, bool) {
+    let names = super::dircache::names(dir);
+    (
+        CONFIG_NAMES.iter().any(|n| names.contains(*n)),
+        names.contains("package.json"),
+    )
 }
 
 /// Static string-literal `basePath` of the `next.config.*` in `owner`

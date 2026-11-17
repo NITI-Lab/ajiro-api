@@ -7,7 +7,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 ### Added
 
 - `scan --check --ignore-lines`: files whose only change is `source.line` (any edit above a route shifts it) do not count as drift, so CI does not fail on unrelated edits. New routes and changed files or handlers still do. The scan report gains `line_only` (count) and `endpoints[].line_only`.
-- A smoke check that passes with a 4xx now carries `warnings` in the test report (`results[].warnings`, `summary.warnings`), shown as `warning:` lines and in JUnit `<system-out>`. A 401/403 points at `environments.<env>.setup` / `headers`, since it usually means the run is not logged in. Exit codes are unchanged.
+- A smoke check that passes with a 4xx now carries `warnings` in the test report (`results[].warnings`, `summary.warnings`), shown as `warning:` lines and in JUnit `<system-out>`. A 401/403/407 says the request was not authenticated, not allowed, or rejected by a middleware (CSRF/origin guard, ...), and points at `environments.<env>.setup` / `headers` for the login case. Exit codes are unchanged.
+- `init` warns when no supported framework is detected: the JSON report has a new `warnings` array, and recognisable unsupported stacks are named (NestJS, Fastify, Koa, Flask, Django, AWS Amplify Gen2, Cloudflare Pages Functions, Google Apps Script). Exit code stays 0.
+- With `--json`, failures that exit 2 also print `{"report_version":1,"ok":false,"error":"..."}` on stdout (stderr keeps the text).
+- Next.js: a static string-literal `basePath` from `next.config.{js,mjs,ts,cjs,mts,cts}` is prepended to the routes of that app (`/admin/api/...`); a non-literal `basePath` warns.
+- Hono / Express: import aliases follow the nearest `tsconfig.json` / `jsconfig.json` `compilerOptions.paths` and `baseUrl` (relative `extends`, JSONC), keeping the `@/` -> `src/` fallback.
+- FastAPI: include chains are followed through `for router in (...)` loops, `setup(app)` helper functions and `app = create_app()` factories; a mounted FastAPI sub-app is scanned with its mount prefix.
+- Scan warnings for things that are not listed as routes or lose information: duplicate method + path (both `file:line`), more than one Next.js app in one scan (use one `ajiro-api.yaml` per app), catch-all parameters (`[...slug]`, `{name:path}`) that match several segments, FastAPI websocket routes and mounts.
 
 ### Changed
 
