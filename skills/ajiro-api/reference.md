@@ -25,7 +25,7 @@ source:                    # written by `scan`; NEVER edit
   file: src/routes/users.ts
   line: 42
   handler: createUser      # optional
-tests: []                  # yours; empty = implicit smoke test (status < 500; GET/HEAD/OPTIONS only unless --smoke-unsafe)
+tests: []                  # yours; empty = implicit smoke test (status < 500, 4xx warns; GET/HEAD/OPTIONS only unless --smoke-unsafe)
 mock: {}                   # yours; used by `ajiro-api mock`
 ```
 

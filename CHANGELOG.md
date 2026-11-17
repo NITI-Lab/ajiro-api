@@ -4,9 +4,15 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- `scan --check --ignore-lines`: files whose only change is `source.line` (any edit above a route shifts it) do not count as drift, so CI does not fail on unrelated edits. New routes and changed files or handlers still do. The scan report gains `line_only` (count) and `endpoints[].line_only`.
+- A smoke check that passes with a 4xx now carries `warnings` in the test report (`results[].warnings`, `summary.warnings`), shown as `warning:` lines and in JUnit `<system-out>`. A 401/403 points at `environments.<env>.setup` / `headers`, since it usually means the run is not logged in. Exit codes are unchanged.
+
 ### Changed
 
 - `README.md` is now the English README; the Japanese one moved to `README.ja.md`.
+- Paths made only of parameters after the `api`/`v1` prefix (catch-all routes such as `/api/v1/{resource}/{id}`) are named from the parameter names: `resource.get`, `resource.id.get`, ... in `api/resource/`, instead of `root.get`, `root.get-2`, ... in `api/root/`. Existing files keep their names.
 
 ## [0.1.6] - 2026-11-17
 

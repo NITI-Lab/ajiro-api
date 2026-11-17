@@ -47,6 +47,7 @@ ajiro-api scan [OPTIONS] [PATHS]...
 | `--framework <名前>` | フレームワーク（既定: 設定ファイルまたは自動判定） |
 | `--dry-run` | ファイルを書かずに変更内容を表示 |
 | `--check` | YAMLが古ければ終了コード1（CI向け）。何も書き込まない |
+| `--ignore-lines` | `--check` と併用。`source.line` だけが変わったファイル（同じファイル内でルートの行がずれただけ）は差分に数えない。新しいルートやファイル・ハンドラーの変更は従来どおり差分 |
 | `--json` | 機械向け出力 |
 
 ### Hono / Express のミドルウェア判定
@@ -55,7 +56,9 @@ Hono はミドルウェアとハンドラーを構文だけでは区別できな
 
 パスのパラメータ名を復元できない場合（`/banners/:`、`/x/:{[0-9]+}` など）は `{}` ではなく `{param}` とし、元のパス文字列を含む警告を出します。
 
-`--json` の主な項目: `framework`、`endpoints[]`（`id` `method` `path` `file` `source` `status`＝`created`/`updated`/`unchanged`）、`created`、`updated`、`unchanged`、`stale`、`warnings`、`duration_ms`。
+`--json` の主な項目: `framework`、`endpoints[]`（`id` `method` `path` `file` `source` `status`＝`created`/`updated`/`unchanged`、`source.line` だけが変わったときは `line_only: true`）、`created`、`updated`、`unchanged`、`line_only`（`updated` のうち行番号だけが変わった件数）、`stale`、`warnings`、`duration_ms`。
+
+`/api/v1/{resource}/{id}` のように接頭辞（`api`、`v1` など）のあとがパラメータだけのパスは、パラメータ名から id とディレクトリを決めます（`GET /api/v1/{resource}/{id}` → `resource.id.get`、`api/resource/`）。既存のファイルは改名しません。
 
 ## test
 
@@ -81,12 +84,14 @@ ajiro-api test [OPTIONS] [FILTER]
 `--json` の主な項目:
 
 - `report_version`、`env`、`base_url`、`ok`
-- `summary`: `total` `passed` `failed` `skipped` `errors` `duration_ms`
-- `results[]`: `endpoint_id` `file` `test` `test_index` `status`（`passed`/`failed`/`skipped`/`error`）`duration_ms` `request` `response` `failures[]` `error` `source`
+- `summary`: `total` `passed` `failed` `skipped` `errors` `warnings` `duration_ms`
+- `results[]`: `endpoint_id` `file` `test` `test_index` `status`（`passed`/`failed`/`skipped`/`error`）`duration_ms` `request` `response` `failures[]` `error` `source` `warnings[]`（ある場合のみ）
 - `failures[]`: `check`（`status` `header` `body.equals` `body.schema` `body.match` `body.snapshot` `body.contains` `max_ms` `capture`）、`path`、`expected`、`actual`、`message`
 - `load_errors[]`: 読み込めなかったファイル
 
 `status` が `error` のものは、接続拒否やテンプレートエラーなど、テストを実行できなかったものです。
+
+`smoke` が 4xx で成功したときは `warnings[]` に理由を入れます（401・403 は未ログインや権限不足、ほかの 4xx はパラメータ・ボディ不足の可能性）。テスト自体は成功のままで、終了コードも変わりません。人間向け出力では `warning:` 行、JUnit では `<system-out>` に出します。
 
 ## list
 

@@ -59,6 +59,9 @@ pub fn human(report: &TestReport, verbose: bool, notes: &[(usize, String)]) -> S
             let _ = writeln!(o, "      expected: {}", truncate(&show(&f.expected), 300));
             let _ = writeln!(o, "      actual:   {}", truncate(&show(&f.actual), 300));
         }
+        for w in &r.warnings {
+            let _ = writeln!(o, "    warning: {}", w);
+        }
         if matches!(r.status, TestStatus::Failed | TestStatus::Error) {
             let _ = writeln!(o, "    → {}", r.file);
             if let Some(s) = &r.source {
@@ -83,6 +86,13 @@ pub fn human(report: &TestReport, verbose: bool, notes: &[(usize, String)]) -> S
         "\n{} passed, {} failed, {} errors, {} skipped ({} total) in {}ms",
         s.passed, s.failed, s.errors, s.skipped, s.total, s.duration_ms
     );
+    if s.warnings > 0 {
+        let _ = writeln!(
+            o,
+            "{} passed with warnings (see `warning:` above); they do not fail the run",
+            s.warnings
+        );
+    }
     o
 }
 
@@ -178,8 +188,22 @@ pub fn junit(report: &TestReport) -> String {
                 secs(r.duration_ms)
             );
             match r.status {
-                TestStatus::Passed => {
+                TestStatus::Passed if r.warnings.is_empty() => {
                     let _ = writeln!(o, "/>");
+                }
+                TestStatus::Passed => {
+                    let _ = writeln!(o, ">");
+                    let text: Vec<String> = r
+                        .warnings
+                        .iter()
+                        .map(|w| format!("warning: {}", w))
+                        .collect();
+                    let _ = writeln!(
+                        o,
+                        "      <system-out>{}</system-out>",
+                        xml_escape(&text.join("\n"))
+                    );
+                    let _ = writeln!(o, "    </testcase>");
                 }
                 TestStatus::Skipped => {
                     let _ = writeln!(o, ">");
@@ -243,5 +267,45 @@ mod tests {
     #[test]
     fn escapes() {
         assert_eq!(xml_escape("a<b>&\"'\u{1}"), "a&lt;b&gt;&amp;&quot;&apos;");
+    }
+
+    #[test]
+    fn warnings_are_printed_and_kept_in_junit() {
+        let result = TestResult {
+            endpoint_id: "a.me".into(),
+            file: "api/a/get-me.yaml".into(),
+            test: "smoke".into(),
+            test_index: 0,
+            status: TestStatus::Passed,
+            duration_ms: 1,
+            request: None,
+            response: None,
+            failures: vec![],
+            error: None,
+            source: None,
+            warnings: vec!["smoke check passed with status 401: <login>".into()],
+        };
+        let report = TestReport {
+            env: "local".into(),
+            ok: true,
+            summary: crate::report::TestSummary {
+                total: 1,
+                passed: 1,
+                warnings: 1,
+                ..Default::default()
+            },
+            results: vec![result],
+            ..Default::default()
+        };
+        let h = human(&report, false, &[]);
+        assert!(
+            h.contains("✓ a.me / smoke (1ms)\n    warning: smoke check passed with status 401"),
+            "{}",
+            h
+        );
+        assert!(h.contains("1 passed with warnings"), "{}", h);
+        let x = junit(&report);
+        assert!(x.contains("<system-out>warning: smoke check passed with status 401: &lt;login&gt;</system-out>"), "{}", x);
+        assert!(x.contains("</testcase>"), "{}", x);
     }
 }
