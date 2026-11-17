@@ -12,6 +12,7 @@ use std::time::Duration;
 
 const SECRET: &str = "sup3r-s3cret-pw";
 const TOKEN: &str = "tok-4f9a1c77";
+const SESSION: &str = "sess-81b2e0d4";
 
 // ---------------------------------------------------------------- server ---
 
@@ -60,6 +61,12 @@ fn start_server() -> u16 {
                     .iter()
                     .find(|h| h.field.equiv("X-Env"))
                     .map(|h| h.value.as_str().to_string());
+                let cookie = req
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Cookie"))
+                    .map(|h| h.value.as_str().to_string())
+                    .unwrap_or_default();
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
                 let parsed: Option<Value> = serde_json::from_str(&body).ok();
@@ -114,6 +121,42 @@ fn start_server() -> u16 {
                         json!({"items": [{"id": 1, "name": "apple", "price": 1.5, "tags": ["a", "b"]}, {"id": 2, "name": "pear", "price": 3, "tags": []}], "total": 2, "note": null}),
                     ),
                     ("GET", "/boom") => json_resp(req, 500, json!({"error": "boom"})),
+                    ("POST", "/mutate") => json_resp(req, 500, json!({"error": "no body"})),
+                    ("GET", "/csrf") => respond(
+                        req,
+                        200,
+                        "application/json",
+                        json!({"csrfToken": "csrf-1"}).to_string(),
+                        &[("Set-Cookie", "csrf=csrf-cookie-1; Path=/; HttpOnly")],
+                    ),
+                    ("POST", "/session-login") => {
+                        let form_ok = body.contains("csrfToken=csrf-1")
+                            && body.contains(&format!("password={}", SECRET));
+                        if !cookie.contains("csrf=csrf-cookie-1") || !form_ok {
+                            return json_resp(req, 401, json!({"error": "bad login"}));
+                        }
+                        respond(
+                            req,
+                            302,
+                            "text/plain",
+                            String::new(),
+                            &[
+                                ("Location", "/"),
+                                ("Set-Cookie", "theme=dark; Path=/"),
+                                (
+                                    "Set-Cookie",
+                                    &format!("sid=\"{}\"; Path=/; HttpOnly", SESSION),
+                                ),
+                            ],
+                        )
+                    }
+                    ("GET", "/me") => {
+                        if cookie == format!("sid={}", SESSION) {
+                            json_resp(req, 200, json!({"name": "Admin"}))
+                        } else {
+                            json_resp(req, 401, json!({"error": "unauthorized", "cookie": cookie}))
+                        }
+                    }
                     ("GET", "/redirect") => respond(
                         req,
                         302,
@@ -955,6 +998,7 @@ tests:
         bail: false,
         timeout: Some(5000),
         verbose: false,
+        smoke_unsafe: false,
     };
     assert_eq!(run_cli(fx.dir.path(), &args).unwrap(), 1);
     let xml = std::fs::read_to_string(&junit).unwrap();
@@ -984,6 +1028,7 @@ tests:
         base_url: None,
         timeout: None,
         verbose: false,
+        smoke_unsafe: false,
     };
     assert!(run_cli(fx.dir.path(), &args_bad_env).is_err());
 }
@@ -1001,4 +1046,132 @@ fn load_errors_make_report_not_ok() {
     assert_eq!(r.load_errors.len(), 1);
     assert!(!r.ok);
     assert_eq!(r.summary.passed, 1);
+}
+
+#[test]
+fn smoke_skips_unsafe_methods_unless_asked() {
+    let fx = Fx::new(&[
+        (
+            "m/post-mutate.yaml",
+            "version: 1\nid: mutate.create\nrequest:\n  method: POST\n  path: /mutate\n",
+        ),
+        (
+            "m/get-boom.yaml",
+            "version: 1\nid: boom.list\nrequest:\n  method: GET\n  path: /boom\n",
+        ),
+    ]);
+    let r = fx.run();
+    let m = find(&r, "mutate.create", "smoke");
+    assert_eq!(m.status, TestStatus::Skipped);
+    let reason = m.error.as_deref().unwrap();
+    assert!(reason.contains("POST may change data"), "{}", reason);
+    assert!(reason.contains("--smoke-unsafe"), "{}", reason);
+    assert!(m.request.is_none(), "no request may be sent");
+    assert_eq!(find(&r, "boom.list", "smoke").status, TestStatus::Failed);
+
+    let r = fx.run_with(TestOptions {
+        smoke_unsafe: true,
+        ..Default::default()
+    });
+    assert_eq!(
+        find(&r, "mutate.create", "smoke").status,
+        TestStatus::Failed
+    );
+}
+
+fn cookie_login_files(password: &str) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "auth/get-csrf.yaml",
+            "version: 1\nid: auth.csrf\nrequest:\n  method: GET\n  path: /csrf\ntests:\n- name: csrf\n  expect:\n    status: 200\n  capture:\n    csrf: $.csrfToken\n    csrfCookie: cookie:csrf\n".to_string(),
+        ),
+        (
+            "auth/post-login.yaml",
+            format!(
+                "version: 1\nid: auth.login\ndepends_on: [auth.csrf]\nrequest:\n  method: POST\n  path: /session-login\n  headers:\n    Content-Type: application/x-www-form-urlencoded\n    Cookie: \"csrf={{{{ csrfCookie }}}}\"\n  body:\n    csrfToken: \"{{{{ csrf }}}}\"\n    password: \"{password}\"\ntests:\n- name: login\n  expect:\n    status: 302\n  capture:\n    sid: cookie:sid\n"
+            ),
+        ),
+        (
+            "me/get-me.yaml",
+            "version: 1\nid: me.get\nrequest:\n  method: GET\n  path: /me\ntests:\n- name: signed in\n  expect:\n    status: 200\n".to_string(),
+        ),
+    ]
+}
+
+fn use_cookie_env(fx: &Fx, setup: &str) {
+    write(
+        fx.dir.path(),
+        "ajiro-api.yaml",
+        &format!(
+            "version: 1\ndefault_env: local\nenvironments:\n  local:\n    base_url: http://127.0.0.1:{}\n    setup: [{}]\n    headers:\n      Cookie: \"sid={{{{ sid }}}}\"\n",
+            fx.port, setup
+        ),
+    );
+}
+
+#[test]
+fn setup_login_captures_cookie_for_env_headers() {
+    let files = cookie_login_files("{{ env.ADMIN_PASSWORD }}");
+    let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (*a, b.as_str())).collect();
+    let fx = Fx::new(&refs);
+    use_cookie_env(&fx, "auth.login");
+
+    // a filter does not drop the setup endpoints (nor what they depend on)
+    let r = fx.run_with(TestOptions {
+        filter: Some("me.get".into()),
+        ..Default::default()
+    });
+    assert!(r.ok, "{:#?}", r.results);
+    let order: Vec<&str> = r.results.iter().map(|x| x.endpoint_id.as_str()).collect();
+    assert_eq!(order, ["auth.csrf", "auth.login", "me.get"]);
+    assert_pass(&r, "me.get", "signed in");
+    // the env Cookie header is left out while its value is not captured yet
+    let csrf_req = find(&r, "auth.csrf", "csrf").request.as_ref().unwrap();
+    assert!(!csrf_req
+        .headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("cookie")));
+    // captured cookies are secrets
+    let json = serde_json::to_string(&r).unwrap();
+    assert!(!json.contains(SESSION), "session leaked: {}", json);
+    assert!(!json.contains("csrf-cookie-1"), "csrf cookie leaked");
+}
+
+#[test]
+fn setup_failure_stops_the_run() {
+    let files = cookie_login_files("wrong");
+    let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (*a, b.as_str())).collect();
+    let fx = Fx::new(&refs);
+    use_cookie_env(&fx, "auth.login");
+    let r = fx.run();
+    assert!(!r.ok);
+    assert_eq!(find(&r, "auth.login", "login").status, TestStatus::Failed);
+    assert!(r.results.iter().all(|x| x.endpoint_id != "me.get"));
+
+    use_cookie_env(&fx, "auth.nope");
+    let err = run_tests(&fx.project(), &TestOptions::default()).unwrap_err();
+    assert!(err.to_string().contains("auth.nope"), "{}", err);
+    let errs = ajiro_api::project_cli::validate_project(&fx.project());
+    assert!(
+        errs.iter().any(|e| e
+            .message
+            .contains("environments.local.setup refers to unknown id `auth.nope`")),
+        "{:?}",
+        errs
+    );
+}
+
+#[test]
+fn env_header_with_uncaptured_variable_errors_outside_setup() {
+    let fx = Fx::new(&[(
+        "me/get-me.yaml",
+        "version: 1\nid: me.get\nrequest:\n  method: GET\n  path: /me\ntests:\n- name: signed in\n  expect:\n    status: 200\n",
+    )]);
+    use_cookie_env(&fx, "");
+    let r = fx.run();
+    let t = find(&r, "me.get", "signed in");
+    assert_eq!(t.status, TestStatus::Error);
+    let msg = t.error.as_deref().unwrap();
+    assert!(msg.contains("environments.local.headers.Cookie"), "{}", msg);
+    assert!(msg.contains("setup"), "{}", msg);
 }

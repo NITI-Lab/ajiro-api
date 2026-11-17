@@ -115,6 +115,10 @@ pub struct TestArgs {
     /// Print request/response details for passing tests too
     #[arg(long, short = 'v')]
     pub verbose: bool,
+    /// Also send the implicit smoke request to endpoints without tests whose
+    /// method may change data (POST, PUT, PATCH, DELETE). Off by default
+    #[arg(long)]
+    pub smoke_unsafe: bool,
 }
 
 #[derive(Debug, Args)]

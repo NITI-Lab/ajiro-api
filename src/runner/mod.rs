@@ -24,7 +24,7 @@ use anyhow::{anyhow, bail, Context as _, Result};
 use indexmap::IndexMap;
 use redact::Redactor;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use template::{render_text, render_value, Vars};
@@ -47,6 +47,7 @@ pub fn run_cli(dir: &Path, args: &TestArgs) -> Result<i32> {
         bail: args.bail,
         base_url: args.base_url.clone(),
         timeout_ms: args.timeout,
+        smoke_unsafe: args.smoke_unsafe,
     };
     let (report, notes) = run_inner(&project, &opts)?;
     if let Some(path) = &args.junit {
@@ -104,6 +105,34 @@ fn effective_tests(def: &EndpointDef) -> Vec<Planned> {
             smoke: false,
         })
         .collect()
+}
+
+/// Indexes of the `setup` endpoints and, transitively, the endpoints they
+/// depend on.
+fn setup_closure(eps: &[LoadedEndpoint], setup: &[String]) -> Result<HashSet<usize>> {
+    let ids: HashMap<&str, usize> = eps
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.def.id.as_str(), i))
+        .collect();
+    let mut out = HashSet::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for id in setup {
+        match ids.get(id.as_str()) {
+            Some(&i) => stack.push(i),
+            None => bail!("unknown endpoint id `{}`", id),
+        }
+    }
+    while let Some(i) = stack.pop() {
+        if out.insert(i) {
+            for d in &eps[i].def.depends_on {
+                if let Some(&j) = ids.get(d.as_str()) {
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Topological order by `depends_on`, ties broken by file order.
@@ -201,6 +230,26 @@ struct Built {
     headers: Vec<(String, String)>,
     body_bytes: Option<Vec<u8>>,
     body: Option<Value>,
+}
+
+/// Methods the implicit smoke test may send without asking (RFC 9110 safe
+/// methods).
+fn is_safe_method(method: &str) -> bool {
+    matches!(method, "GET" | "HEAD" | "OPTIONS")
+}
+
+/// Value of the cookie `name` from the response `Set-Cookie` headers (the
+/// last one wins, as in a browser).
+fn set_cookie_value(resp: &http::Response, name: &str) -> Option<String> {
+    resp.headers
+        .iter()
+        .rev()
+        .filter(|(k, _)| k == "set-cookie")
+        .find_map(|(_, v)| {
+            let pair = v.split(';').next()?.trim();
+            let (n, val) = pair.split_once('=')?;
+            (n.trim() == name).then(|| val.trim().trim_matches('"').to_string())
+        })
 }
 
 fn set_header(headers: &mut Vec<(String, String)>, k: &str, v: &str) {
@@ -313,10 +362,14 @@ struct Run<'a> {
     opts: &'a TestOptions,
     env_name: String,
     base_url: String,
+    /// Environment headers as templates; rendered per request so they can
+    /// use values captured by `setup` endpoints.
     env_headers: Vec<(String, String)>,
     agent: ureq::Agent,
     vars: Vars,
     redactor: Redactor,
+    /// True while the environment `setup` endpoints run.
+    in_setup: bool,
 }
 
 fn load_dotenv(path: &Path, into: &mut HashMap<String, String>) {
@@ -369,9 +422,19 @@ fn run_inner(project: &Project, opts: &TestOptions) -> Result<(TestReport, Vec<(
     }
     let mut env_headers = Vec::new();
     for (k, v) in &env.headers {
-        let rv = render_text(v, &vars)
-            .map_err(|e| anyhow!("environments.{}.headers.{}: {}", env_name, k, e))?;
-        set_header(&mut env_headers, k, &rv);
+        // `{{ env.X }}` must resolve now; other variables may be captured
+        // later by `setup` endpoints, so the header stays a template.
+        match render_text(v, &vars) {
+            Err(template::TemplateError::Undefined(name)) if name.starts_with("env.") => {
+                return Err(anyhow!(
+                    "environments.{}.headers.{}: {}",
+                    env_name,
+                    k,
+                    template::TemplateError::Undefined(name)
+                ));
+            }
+            _ => set_header(&mut env_headers, k, v),
+        }
     }
 
     let timeout = opts.timeout_ms.unwrap_or(cfg.timeout_ms);
@@ -391,11 +454,48 @@ fn run_inner(project: &Project, opts: &TestOptions) -> Result<(TestReport, Vec<(
         agent,
         vars,
         redactor,
+        in_setup: false,
     };
 
+    // `setup` endpoints (and what they depend on) run first, always, with
+    // all their tests; the rest keeps the `depends_on` order.
+    let setup = setup_closure(&endpoints, &env.setup)
+        .map_err(|e| anyhow!("environments.{}.setup: {}", env_name, e))?;
     let mut results: Vec<TestResult> = Vec::new();
     let mut notes: Vec<(usize, String)> = Vec::new();
+    run.in_setup = true;
+    'setup: for &ei in ordered.iter().filter(|i| setup.contains(i)) {
+        let ep = &endpoints[ei];
+        for planned in effective_tests(&ep.def) {
+            let (res, n) = run.run_one(ep, &planned);
+            let failed = matches!(res.status, TestStatus::Failed | TestStatus::Error);
+            for text in n {
+                notes.push((results.len(), text));
+            }
+            results.push(res);
+            if failed {
+                notes.push((
+                    results.len() - 1,
+                    format!(
+                        "setup endpoint `{}` failed; the remaining tests were not run",
+                        ep.def.id
+                    ),
+                ));
+                break 'setup;
+            }
+        }
+    }
+    let setup_failed = results
+        .iter()
+        .any(|r| matches!(r.status, TestStatus::Failed | TestStatus::Error));
+    run.in_setup = false;
     'outer: for ei in ordered {
+        if setup_failed {
+            break 'outer;
+        }
+        if setup.contains(&ei) {
+            continue;
+        }
         let Some(sel) = &selection[ei] else { continue };
         let ep = &endpoints[ei];
         for planned in effective_tests(&ep.def) {
@@ -539,8 +639,26 @@ impl Run<'_> {
         // without `Authorization`)
         let mut headers: Vec<(String, String)> = Vec::new();
         for (k, v) in header_defs.iter().filter(|(_, v)| !v.is_empty()) {
-            let rv = render_text(v, &self.vars)
-                .map_err(|e| ctx(&format!("request.headers.{}", k), e))?;
+            let from_env = self
+                .env_headers
+                .iter()
+                .any(|(ek, ev)| ek.eq_ignore_ascii_case(k) && ev == v);
+            let rv = match render_text(v, &self.vars) {
+                Ok(rv) => rv,
+                // While `setup` runs, an environment header that needs a value
+                // the setup has not captured yet (the session cookie of a
+                // login) is left out instead of failing the request.
+                Err(template::TemplateError::Undefined(_)) if from_env && self.in_setup => {
+                    continue;
+                }
+                Err(e) if from_env => {
+                    return Err(format!(
+                        "{} (in environments.{}.headers.{}; capture it in a `setup` endpoint or define it in `variables`)",
+                        e, self.env_name, k
+                    ));
+                }
+                Err(e) => return Err(ctx(&format!("request.headers.{}", k), e)),
+            };
             headers.push((k.clone(), rv));
         }
 
@@ -667,6 +785,16 @@ impl Run<'_> {
 
         if test.skip {
             return (skip(result, "skip: true".into()), vec![]);
+        }
+        if planned.smoke && !self.in_setup && !self.opts.smoke_unsafe {
+            let method = ep.def.request.method.to_ascii_uppercase();
+            if !is_safe_method(&method) {
+                let reason = format!(
+                    "smoke test skipped: {} may change data; add tests to {} (or run with --smoke-unsafe)",
+                    method, ep.rel_path
+                );
+                return (skip(result, reason), vec![]);
+            }
         }
         if !test.only_env.is_empty() && !test.only_env.contains(&self.env_name) {
             let reason = format!(
@@ -812,6 +940,8 @@ impl Run<'_> {
                 ))
             } else if let Some(h) = spec.strip_prefix("header:") {
                 Ok(resp.header(h.trim()).map(|s| Value::String(s.to_string())))
+            } else if let Some(c) = spec.strip_prefix("cookie:") {
+                Ok(set_cookie_value(resp, c.trim()).map(Value::String))
             } else {
                 match &resp.json {
                     Some(j) => jsonpath::query_first(j, spec).map(|o| o.cloned()),
@@ -826,7 +956,8 @@ impl Run<'_> {
                                 .is_some_and(|k| self.redactor.is_sensitive(&k)))
                         || spec
                             .strip_prefix("header:")
-                            .is_some_and(|h| self.redactor.is_sensitive(h.trim()));
+                            .is_some_and(|h| self.redactor.is_sensitive(h.trim()))
+                        || spec.starts_with("cookie:");
                     if sensitive {
                         match &v {
                             Value::String(s) => self.redactor.add_secret(s),

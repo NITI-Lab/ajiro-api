@@ -157,11 +157,11 @@
         "expect": { "$ref": "#/$defs/expect" },
         "capture": {
           "type": "object",
-          "description": "Variables to capture from the response for later tests and for endpoints that `depends_on` this one. Value: a JSONPath (`$.token`), `header:<Header-Name>`, `status`, or `body` (the whole body).",
+          "description": "Variables to capture from the response for later tests and for endpoints that `depends_on` this one. Value: a JSONPath (`$.token`), `header:<Header-Name>`, `cookie:<cookie-name>` (a cookie from the `Set-Cookie` headers; always masked in logs), `status`, or `body` (the whole body).",
           "additionalProperties": {
             "type": "string",
-            "description": "`$.jsonpath` | `header:Name` | `status` | `body`",
-            "examples": ["$.id", "header:Location", "status", "body"]
+            "description": "`$.jsonpath` | `header:Name` | `cookie:name` | `status` | `body`",
+            "examples": ["$.id", "header:Location", "cookie:session", "status", "body"]
           },
           "examples": [{ "userId": "$.id", "location": "header:Location" }]
         },

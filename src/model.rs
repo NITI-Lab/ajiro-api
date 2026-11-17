@@ -106,8 +106,9 @@ pub struct TestCase {
     pub request: Option<RequestOverride>,
     #[serde(default)]
     pub expect: Expect,
-    /// Variables to capture from the response: `name: <JSONPath>` or
-    /// `name: header:<Header-Name>` or `name: status`.
+    /// Variables to capture from the response: `name: <JSONPath>`,
+    /// `name: header:<Header-Name>`, `name: cookie:<cookie-name>` (from
+    /// `Set-Cookie`), `name: status` or `name: body`.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub capture: IndexMap<String, String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -281,9 +282,16 @@ pub struct Environment {
     /// Variables available as `{{ name }}`. Templates allowed (e.g. `{{ env.X }}`).
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub variables: IndexMap<String, Value>,
-    /// Headers sent with every request in this environment.
+    /// Headers sent with every request in this environment. Templates are
+    /// rendered per request, so they can use values captured by `setup`
+    /// endpoints (e.g. `Cookie: "session={{ session }}"`).
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub headers: IndexMap<String, String>,
+    /// Endpoint ids run before every other endpoint (e.g. a login that
+    /// captures a session cookie). They always run, even when a filter is
+    /// given, and a failure stops the run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
     /// Environment-specific dotenv file (overrides the project one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<String>,
