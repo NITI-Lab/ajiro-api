@@ -8,6 +8,7 @@
 
 pub mod express;
 pub mod fastapi;
+mod gitignore;
 pub mod go;
 pub mod hono;
 pub mod nextjs;
@@ -90,43 +91,98 @@ fn abs_path(project: &Project, p: &Path) -> PathBuf {
     }
 }
 
-fn collect_files(project: &Project, opts: &ScanOptions) -> Vec<PathBuf> {
+/// Test code is not application code: skipped below the scanned directory.
+fn is_test_dir(name: &str) -> bool {
+    matches!(name, "tests" | "test" | "__tests__")
+}
+
+fn is_test_file(name: &str) -> bool {
+    name == "conftest.py"
+        || (name.starts_with("test_") && name.ends_with(".py"))
+        || name.ends_with("_test.py")
+        || name.ends_with("_test.go")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+}
+
+fn collect_files(project: &Project, opts: &ScanOptions, framework: &str) -> Vec<PathBuf> {
     let roots: Vec<PathBuf> = if opts.paths.is_empty() {
         project.source_dirs()
     } else {
         opts.paths.iter().map(|p| abs_path(project, p)).collect()
     };
     let mut files = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for r in roots {
         if r.is_file() {
-            files.push(r);
+            if seen.insert(r.clone()) {
+                files.push(r);
+            }
             continue;
         }
+        let exclude = project.config.exclude.clone();
+        let proj = project.clone();
+        let is_next = framework == "nextjs";
+        let mut git = gitignore::GitFilter::discover(&r);
         let walker = walkdir::WalkDir::new(&r)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|e| {
+            .filter_entry(move |e| {
                 if e.depth() == 0 {
                     return true;
                 }
                 let name = e.file_name().to_string_lossy();
-                if e.file_type().is_dir()
-                    && (SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.'))
-                {
+                let rel = proj.rel(e.path());
+                let is_dir = e.file_type().is_dir();
+                if is_dir {
+                    if SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.') {
+                        return false;
+                    }
+                    // A Next.js route directory may legitimately be named `test`.
+                    let route_dir = is_next && rel.split('/').any(|c| c == "app" || c == "pages");
+                    if is_test_dir(&name) && !(route_dir && name != "__tests__") {
+                        return false;
+                    }
+                } else if is_test_file(&name) {
                     return false;
                 }
-                !is_excluded(&project.rel(e.path()), &project.config.exclude)
+                if is_excluded(&rel, &exclude) {
+                    return false;
+                }
+                !git.as_mut().is_some_and(|g| g.is_ignored(e.path(), is_dir))
             });
-        for e in walker
+        // Sorted within each source, sources kept in the configured order:
+        // the first source wins when two routes collide.
+        let mut batch: Vec<PathBuf> = walker
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-        {
-            files.push(e.into_path());
+            .map(|e| e.into_path())
+            .collect();
+        batch.sort();
+        for f in batch {
+            if seen.insert(f.clone()) {
+                files.push(f);
+            }
         }
     }
-    files.sort();
-    files.dedup();
     files
+}
+
+/// Clean `file` for output: `/`-separated, no duplicate slashes, relative to
+/// the project root when inside it.
+fn clean_file(project: &Project, file: &str) -> String {
+    let f = file.replace('\\', "/");
+    let p = Path::new(&f);
+    let f = match p.strip_prefix(&project.root) {
+        Ok(r) if p.is_absolute() => r.to_string_lossy().replace('\\', "/"),
+        _ => f,
+    };
+    let lead = f.starts_with('/');
+    let parts: Vec<&str> = f
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    format!("{}{}", if lead { "/" } else { "" }, parts.join("/"))
 }
 
 fn render_source_children(s: &SourceInfo) -> Vec<String> {
@@ -306,10 +362,34 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
         );
     }
 
-    let files = collect_files(project, opts);
+    let files = collect_files(project, opts, &framework);
     let (mut routes, mut warnings) = run_framework(&framework, project, &files)?;
+    for r in &mut routes {
+        r.file = clean_file(project, &r.file);
+    }
+    // One endpoint per method + path: the first route in scanner order (which
+    // follows `sources` order) wins; every dropped duplicate is reported.
+    let mut first: HashMap<(String, String), usize> = HashMap::new();
+    let mut kept: Vec<Route> = Vec::with_capacity(routes.len());
+    for r in routes {
+        match first.get(&(r.method.clone(), r.path.clone())) {
+            Some(&i) => {
+                let k = &kept[i];
+                if (k.file.as_str(), k.line) != (r.file.as_str(), r.line) {
+                    warnings.push(format!(
+                        "duplicate route {} {}: {}:{} ignored, keeping {}:{}",
+                        r.method, r.path, r.file, r.line, k.file, k.line
+                    ));
+                }
+            }
+            None => {
+                first.insert((r.method.clone(), r.path.clone()), kept.len());
+                kept.push(r);
+            }
+        }
+    }
+    let mut routes = kept;
     routes.sort_by(|a, b| (&a.path, &a.method).cmp(&(&b.path, &b.method)));
-    routes.dedup_by(|b, a| a.path == b.path && a.method == b.method);
     if routes.is_empty() {
         let mut msg = format!(
             "no {} routes found in {} scanned files",
