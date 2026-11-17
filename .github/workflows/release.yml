@@ -113,7 +113,7 @@ jobs:
           if [ -z "$NPM_TOKEN" ]; then echo "NPM_TOKEN is not set; skipping npm publish."; fi
       - uses: actions/checkout@v7
         if: env.NPM_TOKEN != ''
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: env.NPM_TOKEN != ''
         with:
           node-version: 22
