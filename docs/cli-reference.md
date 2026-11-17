@@ -22,6 +22,14 @@ ajiro-api [OPTIONS] <COMMAND>
 
 `--json` を持つコマンドは、エージェントが読める安定した出力を返します。出力中のトークンやパスワードは `***` で伏せられます。
 
+`--json` 付きで終了コード `2`（ツール自体が実行できなかった）になるときは、stderr のテキスト（`error: ...`）に加えて、stdout に次のJSONオブジェクトを出力します（`init` `scan` `test` `list` `validate` `openapi import` `import postman|bruno`）。
+
+```json
+{ "report_version": 1, "ok": false, "error": "invalid /path/ajiro-api.yaml: missing field `version`" }
+```
+
+`ajiro-api.yaml` が存在するのに不正（`version: 1` がない、未知のキーなど）な場合、すべてのコマンドが設定を暗黙の既定値で置き換えず、その理由を示して終了コード `2` で終了します。既定値にフォールバックするのは `ajiro-api.yaml` が見つからないときだけです。
+
 ## init
 
 `ajiro-api.yaml` と `api/` ディレクトリを作ります。フレームワークは自動判定します。
@@ -31,7 +39,9 @@ ajiro-api [OPTIONS] <COMMAND>
 | `--framework <名前>` | `nextjs` `hono` `fastapi` `express` `go-nethttp` `go-chi` `go-echo`（省略時は自動判定） |
 | `--force` | 既存の `ajiro-api.yaml` を上書き |
 | `--base-url <URL>` | `local` 環境のベースURL。省略時はポートを自動検出します（`.env.example` の `PORT=`、`package.json` の `-p`/`--port`、コード中の `serve({ port })`・`process.env.PORT ?? 8000`・`.listen(8000)`・`ListenAndServe(":8080")` など）。見つからなければフレームワークの既定値です |
-| `--json` | 機械向け出力 |
+| `--json` | 機械向け出力（`created` `updated` `framework` `warnings` `config`） |
+
+対応フレームワークが見つからないとき（`--framework` 省略時）も `ajiro-api.yaml` は作られ終了コードは `0` ですが、`framework` は `null`、`warnings` に対応フレームワーク一覧と設定方法を入れ、人間向け出力にも `warning:` を表示します。Flask / Django / NestJS / Fastify / Koa / AWS Amplify Gen2 / Cloudflare Pages Functions / Google Apps Script のように判別できる未対応スタックは名前を明示します（NestJS は内部でExpressを使っていても Express とは判定しません）。`hono` が依存にあっても、Vite/React 等のブラウザアプリで Honoサーバー（wrangler設定、`@hono/node-server`、`new Hono()`）が無ければ、`hono/client` だけを使うクライアントとみなして `hono` とは判定しません。
 
 ## scan
 
@@ -46,8 +56,21 @@ ajiro-api scan [OPTIONS] [PATHS]...
 | `[PATHS]...` | 解析するディレクトリまたはファイル（既定: `ajiro-api.yaml` の `sources`） |
 | `--framework <名前>` | フレームワーク（既定: 設定ファイルまたは自動判定） |
 | `--dry-run` | ファイルを書かずに変更内容を表示 |
-| `--check` | YAMLが古ければ終了コード1（CI向け）。何も書き込まない |
+| `--check` | YAMLが古ければ終了コード1（CI向け）。何も書き込まない。ルートが0件で既存のエンドポイントファイルも0件（何も検査していない）のときも終了コード1 |
+| `--ignore-lines` | `--check` と併用。`source.line` だけが変わったファイル（同じファイル内でルートの行がずれただけ）は差分に数えない。新しいルートやファイル・ハンドラーの変更は従来どおり差分 |
 | `--json` | 機械向け出力 |
+
+### Hono / Express の import エイリアスとファクトリ関数
+
+`@/foo` のようなエイリアスは、import 元ファイルから見て最も近い `tsconfig.json` / `jsconfig.json` の `compilerOptions.paths` と `baseUrl` で解決します（相対パスの `extends` をたどり、コメントや末尾カンマ付きの JSONC も読めます）。設定がない場合は従来どおり `@/` と `~/` を `src/` として扱います。Hono では `new Hono()` / `new OpenAPIHono()` を返す関数（`wrap(new Hono())` のように別の呼び出しで包んでいても可）をファクトリ関数として扱い、呼び出し箇所ごとにマウントします。一度も呼び出されないファクトリ関数内のルートは出力せず、警告します。
+
+### 走査対象のファイルと重複ルート
+
+- `.gitignore`（リポジトリルートから走査ディレクトリまでと、配下のもの）に一致するファイルは走査しません。ただし git で追跡されているファイルは対象のままです。git リポジトリの外では適用しません。`node_modules` `dist` `build` `.next` `vendor` `venv` などの名前による除外と、`.` で始まるディレクトリの除外は従来どおりです。
+- テストコードは既定で走査しません: ディレクトリ `tests` `test` `__tests__`、ファイル `test_*.py` `*_test.py` `conftest.py` `*_test.go` `*.test.*` `*.spec.*`。Next.js の `app/` `pages/` 配下にある `test` / `tests` ディレクトリはルートとして残します。設定の `exclude` で追加の除外ができます。
+- 同じメソッドとパスのルートが複数見つかったときは、走査した順（`sources` の並び順、同じ `sources` 内はパス順）で最初のものを採用し、捨てたルートごとに両方の `ファイル:行` を示す警告（`duplicate route ...`）を出します。
+- `source.file` はプロジェクトルート内ならルートからの相対パス、外なら `/` 区切りの絶対パスです。
+- Next.js: アプリのルート（`next.config.*` または `package.json` のあるディレクトリ）ごとに、`next.config.{js,mjs,ts,cjs}` の文字列リテラルの `basePath` をパスの前に付けます（`basePath: "/admin"` なら `/admin/api/...`）。リテラルでない場合は警告し、付けません。1回の走査に複数の Next.js アプリが含まれる場合は警告します。アプリごとに `ajiro-api.yaml`（または `api_dir`）を分けてください。`[...slug]` / `[[...slug]]` は `{slug}` になりますが、複数セグメントに一致することを警告でまとめて知らせます。
 
 ### Hono / Express のミドルウェア判定
 
@@ -55,7 +78,11 @@ Hono はミドルウェアとハンドラーを構文だけでは区別できな
 
 パスのパラメータ名を復元できない場合（`/banners/:`、`/x/:{[0-9]+}` など）は `{}` ではなく `{param}` とし、元のパス文字列を含む警告を出します。
 
-`--json` の主な項目: `framework`、`endpoints[]`（`id` `method` `path` `file` `source` `status`＝`created`/`updated`/`unchanged`）、`created`、`updated`、`unchanged`、`stale`、`warnings`、`duration_ms`。
+ルートが0件のときは `warnings` に「no <fw> routes found in N scanned source file(s)」を出します。N は実際に解析したコードファイルだけの数（画像などは含みません）で、未対応フレームワークの可能性、対応一覧、判別できる未対応スタック名を添えます。終了コードは既定で `0` です。
+
+`--json` の主な項目: `framework`、`endpoints[]`（`id` `method` `path` `file` `source` `status`＝`created`/`updated`/`unchanged`、`source.line` だけが変わったときは `line_only: true`）、`created`、`updated`、`unchanged`、`line_only`（`updated` のうち行番号だけが変わった件数）、`stale`、`warnings`、`duration_ms`。
+
+`/api/v1/{resource}/{id}` のように接頭辞（`api`、`v1` など）のあとがパラメータだけのパスは、パラメータ名から id とディレクトリを決めます（`GET /api/v1/{resource}/{id}` → `resource.id.get`、`api/resource/`）。既存のファイルは改名しません。
 
 ## test
 
@@ -81,12 +108,14 @@ ajiro-api test [OPTIONS] [FILTER]
 `--json` の主な項目:
 
 - `report_version`、`env`、`base_url`、`ok`
-- `summary`: `total` `passed` `failed` `skipped` `errors` `duration_ms`
-- `results[]`: `endpoint_id` `file` `test` `test_index` `status`（`passed`/`failed`/`skipped`/`error`）`duration_ms` `request` `response` `failures[]` `error` `source`
+- `summary`: `total` `passed` `failed` `skipped` `errors` `warnings` `duration_ms`
+- `results[]`: `endpoint_id` `file` `test` `test_index` `status`（`passed`/`failed`/`skipped`/`error`）`duration_ms` `request` `response` `failures[]` `error` `source` `warnings[]`（ある場合のみ）
 - `failures[]`: `check`（`status` `header` `body.equals` `body.schema` `body.match` `body.snapshot` `body.contains` `max_ms` `capture`）、`path`、`expected`、`actual`、`message`
 - `load_errors[]`: 読み込めなかったファイル
 
 `status` が `error` のものは、接続拒否やテンプレートエラーなど、テストを実行できなかったものです。
+
+`smoke` が 4xx で成功したときは `warnings[]` に理由を入れます（401・403 は未ログインや権限不足、ほかの 4xx はパラメータ・ボディ不足の可能性）。テスト自体は成功のままで、終了コードも変わりません。人間向け出力では `warning:` 行、JUnit では `<system-out>` に出します。
 
 ## list
 

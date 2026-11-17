@@ -4,9 +4,39 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-18
+
+### Added
+
+- `scan --check --ignore-lines`: files whose only change is `source.line` (any edit above a route shifts it) do not count as drift, so CI does not fail on unrelated edits. New routes and changed files or handlers still do. The scan report gains `line_only` (count) and `endpoints[].line_only`.
+- A smoke check that passes with a 4xx now carries `warnings` in the test report (`results[].warnings`, `summary.warnings`), shown as `warning:` lines and in JUnit `<system-out>`. A 401/403/407 says the request was not authenticated, not allowed, or rejected by a middleware (CSRF/origin guard, ...), and points at `environments.<env>.setup` / `headers` for the login case. Exit codes are unchanged.
+- `init` warns when no supported framework is detected: the JSON report has a new `warnings` array, and recognisable unsupported stacks are named (NestJS, Fastify, Koa, Flask, Django, AWS Amplify Gen2, Cloudflare Pages Functions, Google Apps Script). Exit code stays 0.
+- With `--json`, failures that exit 2 also print `{"report_version":1,"ok":false,"error":"..."}` on stdout (stderr keeps the text).
+- Next.js: a static string-literal `basePath` from `next.config.{js,mjs,ts,cjs,mts,cts}` is prepended to the routes of that app (`/admin/api/...`); a non-literal `basePath` warns.
+- Hono / Express: import aliases follow the nearest `tsconfig.json` / `jsconfig.json` `compilerOptions.paths` and `baseUrl` (relative `extends`, JSONC), keeping the `@/` -> `src/` fallback.
+- FastAPI: include chains are followed through `for router in (...)` loops, `setup(app)` helper functions and `app = create_app()` factories; a mounted FastAPI sub-app is scanned with its mount prefix.
+- Scan warnings for things that are not listed as routes or lose information: duplicate method + path (both `file:line`), more than one Next.js app in one scan (use one `ajiro-api.yaml` per app), catch-all parameters (`[...slug]`, `{name:path}`) that match several segments, FastAPI websocket routes and mounts.
+
 ### Changed
 
 - `README.md` is now the English README; the Japanese one moved to `README.ja.md`.
+- Paths made only of parameters after the `api`/`v1` prefix (catch-all routes such as `/api/v1/{resource}/{id}`) are named from the parameter names: `resource.get`, `resource.id.get`, ... in `api/resource/`, instead of `root.get`, `root.get-2`, ... in `api/root/`. Existing files keep their names.
+- Endpoint ids for new files no longer depend on scan order. When base ids collide, the plain route keeps it and the others get the full form (the `api`/`vN` prefix and parameter names kept, e.g. `medical.offices.medical-office-id.users.list`, `api.health.get`); `-2` is used only when the full forms are identical too. File-name suffixes are assigned in a stable (path, method) order. Existing ids are unchanged.
+- A GET whose last segment is static is `list` only when it looks like a collection (`users`, `logs`, `search`, `history`, ...); otherwise `get` (`health`, `me`, `detail`). Doubled verbs (`offers.create.create`, `units.list.list`) are no longer produced, and a segment mixing a parameter and text (`{item_id}.png`) gives `w.og.png.get`.
+- `scan` skips files ignored by `.gitignore` (files tracked by git are always scanned) and test code by default (`tests/`, `test/`, `__tests__/`, `test_*.py`, `*_test.py`, `conftest.py`, `*_test.go`, `*.test.*`, `*.spec.*`; Next.js route folders named `test` are kept). Vendored trees ignored by git no longer slow scans down.
+- FastAPI: only routes reachable from a module-level or factory-returned app via `include_router` / mount are emitted; routers that are never included and apps created inside functions (tests) are skipped with one warning. Projects without any app still emit every router, with a warning. Routes are returned in registration order, so the first duplicate is the one FastAPI serves.
+- The "no routes found" warning counts only parsed source files, lists the supported frameworks and names a recognised unsupported stack. `scan --check` exits 1 when no routes are found and no endpoint files exist (nothing was checked).
+- `init` does not pick `hono` for browser apps that only use `hono/client`, and prefers "NestJS (unsupported)" over `express` when `@nestjs/core` is present.
+- Directory listings are cached during a scan, so marker-file lookups (`next.config.*`, `tsconfig.json`, `.gitignore`) cost one listing per directory; this matters on network and WSL mounts.
+
+### Fixed
+
+- An existing but invalid `ajiro-api.yaml` (for example missing `version`) is an error (exit 2) for every command instead of a silent fallback to defaults that then reported "could not detect the framework".
+- Scans with several `sources` no longer silently drop routes that share a method and path; the first in `sources` (or registration) order wins and every dropped one is reported.
+- FastAPI: trailing slashes are preserved (`/items/` and `/items` are distinct routes; `@router.get("/")` on a prefixed router keeps its slash instead of producing a path that only redirects). Re-scans match existing files with the slash, and the mock server prefers the route whose trailing slash matches the request.
+- Hono: app factories that wrap the constructor (`wrap(new OpenAPIHono())`) are recognised; instances returned from factory functions keep the prefix they are mounted with; routes of factories that are never called are no longer emitted (a warning is shown). Clearer warnings for unresolved mounts, deduplicated.
+- Hono / Express: tsconfig `paths` aliases resolve on Windows.
+- `source.file` is a clean path for sources outside the project root (no more `//mnt/...`).
 
 ## [0.1.6] - 2026-11-17
 

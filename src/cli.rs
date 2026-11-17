@@ -82,6 +82,9 @@ pub struct ScanArgs {
     /// Exit with code 1 if YAML files are out of date (for CI); writes nothing
     #[arg(long)]
     pub check: bool,
+    /// With --check: do not count files whose only change is `source.line` as drift
+    #[arg(long, requires = "check")]
+    pub ignore_lines: bool,
     /// Machine-readable output
     #[arg(long)]
     pub json: bool,
@@ -251,8 +254,32 @@ pub fn main() -> i32 {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {:#}", e);
+            if wants_json(&cli.command) {
+                let obj = serde_json::json!({
+                    "report_version": crate::report::REPORT_VERSION,
+                    "ok": false,
+                    "error": format!("{:#}", e),
+                });
+                println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
+            }
             crate::exit::ERROR
         }
+    }
+}
+
+/// Whether the command was run with `--json` (errors then also go to stdout
+/// as a JSON object).
+fn wants_json(c: &Command) -> bool {
+    match c {
+        Command::Init(a) => a.json,
+        Command::Scan(a) => a.json,
+        Command::Test(a) => a.json,
+        Command::List(a) => a.json,
+        Command::Validate(a) => a.json,
+        Command::Openapi(OpenapiCommand::Import { json, .. }) => *json,
+        Command::Import(ImportCommand::Postman { json, .. })
+        | Command::Import(ImportCommand::Bruno { json, .. }) => *json,
+        _ => false,
     }
 }
 

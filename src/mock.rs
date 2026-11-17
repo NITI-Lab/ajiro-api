@@ -137,10 +137,22 @@ impl Shared {
 
 /// Find the best route: static segments win over parameters (earlier
 /// segments weigh more). HEAD falls back to GET.
+#[cfg(test)]
 fn find_route<'a>(
     routes: &'a [Route],
     method: &str,
     segs: &[String],
+) -> Option<(&'a Route, HashMap<String, String>)> {
+    find_route_slash(routes, method, segs, false)
+}
+
+/// [`find_route`], and among equally specific routes prefer the one whose
+/// trailing `/` matches the request (`/items` and `/items/` can be two routes).
+fn find_route_slash<'a>(
+    routes: &'a [Route],
+    method: &str,
+    segs: &[String],
+    trailing: bool,
 ) -> Option<(&'a Route, HashMap<String, String>)> {
     let try_method = |m: &str| -> Option<(&'a Route, HashMap<String, String>)> {
         let mut best: Option<(Vec<bool>, &Route, HashMap<String, String>)> = None;
@@ -166,6 +178,7 @@ fn find_route<'a>(
                     }
                 }
             }
+            rank.push(r.def.request.path.ends_with('/') == trailing);
             if ok && best.as_ref().map(|b| rank > b.0).unwrap_or(true) {
                 best = Some((rank, r, params));
             }
@@ -474,7 +487,8 @@ fn handle(
         return done(json_out(200, &json!({ "endpoints": list })), "(ajiro)");
     }
 
-    let found = find_route(&routes, method, &segs);
+    let trailing = path_raw.len() > 1 && path_raw.ends_with('/');
+    let found = find_route_slash(&routes, method, &segs, trailing);
 
     if found.is_none() && method == "OPTIONS" {
         return done(
@@ -854,6 +868,26 @@ mod tests {
         let (r, params) = find_route(&routes, "GET", &segs("/users")).unwrap();
         assert_eq!(r.def.id, "list");
         assert!(params.is_empty());
+    }
+
+    #[test]
+    fn find_route_prefers_matching_trailing_slash() {
+        let routes = vec![
+            route("plain", "GET", "/items"),
+            route("slash", "GET", "/items/"),
+        ];
+        let pick = |t| {
+            find_route_slash(&routes, "GET", &segs("/items"), t)
+                .unwrap()
+                .0
+                .def
+                .id
+                .clone()
+        };
+        assert_eq!(pick(false), "plain");
+        assert_eq!(pick(true), "slash");
+        let only = vec![route("slash", "GET", "/items/")];
+        assert!(find_route_slash(&only, "GET", &segs("/items"), false).is_some());
     }
 
     #[test]

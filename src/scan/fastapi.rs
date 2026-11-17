@@ -90,17 +90,60 @@ struct Include {
     parent: String,
     child: String,
     prefix: Option<PStr>,
+    line: u32,
+    /// `app.mount(path, sub_app)` instead of `include_router`
+    mount: bool,
+}
+
+/// A `FastAPI()` / `APIRouter()` instance.
+struct Inst {
+    /// own prefix (`None` = dynamic)
+    prefix: Option<PStr>,
+    is_app: bool,
+    /// created inside a function (the instance key is `func::name`)
+    local: bool,
+    line: u32,
+    /// `Some((function, param))` for a function parameter used as an app /
+    /// router (`def setup(app): app.include_router(...)`); resolved through
+    /// the call sites of `function`.
+    param_of: Option<(String, String)>,
+}
+
+/// A call `callee(args...)`; only arguments that are plain names / attributes are kept.
+struct CallRec {
+    callee: String,
+    args: Vec<String>,
+    kwargs: Vec<(String, String)>,
+    line: u32,
+}
+
+/// A websocket route or a mount that is not turned into an endpoint.
+struct Skipped {
+    owner: String,
+    path: String,
+    line: u32,
 }
 
 #[derive(Default)]
 struct FileInfo {
     rel: String,
     imports: HashMap<String, Import>,
-    /// router instances; value = own prefix (`None` = dynamic)
-    instances: HashMap<String, Option<PStr>>,
+    instances: HashMap<String, Inst>,
+    /// local instances (`func::name`) that the function returns (app factories)
+    returned: HashSet<String>,
+    /// top-level function -> the local instance it returns (`create_app` -> `create_app::app`)
+    returned_fns: HashMap<String, String>,
+    /// module-level `NAME = factory(...)`: NAME -> callee text
+    aliases: HashMap<String, String>,
+    /// module-level `NAME = (a.router, b.router)` lists, for `for r in NAME:` loops
+    lists: HashMap<String, Vec<String>>,
     consts: HashMap<String, PStr>,
     routes: Vec<RouteDecl>,
     includes: Vec<Include>,
+    skipped: Vec<Skipped>,
+    /// parameter names of the functions that use a parameter as an app / router
+    fn_params: HashMap<String, Vec<String>>,
+    calls: Vec<CallRec>,
 }
 
 struct Parsed {
@@ -112,6 +155,12 @@ struct Parsed {
 type Key = (usize, String);
 
 pub fn scan(root: &Path, files: &[PathBuf]) -> Result<Vec<Route>> {
+    Ok(scan_with_warnings(root, files)?.0)
+}
+
+/// Like [`scan`], and also returns human-readable warnings (unreachable
+/// routers, shadowed duplicates, skipped websockets / mounts, ...).
+pub fn scan_with_warnings(root: &Path, files: &[PathBuf]) -> Result<(Vec<Route>, Vec<String>)> {
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 
@@ -225,6 +274,13 @@ fn extract(p: &Parsed, enums: &HashSet<String>) -> FileInfo {
                     if l.kind() == "identifier" {
                         if let Some(v) = eval_pstr(r, src) {
                             info.consts.insert(text(l, src).to_string(), v);
+                        } else if matches!(r.kind(), "list" | "tuple" | "parenthesized_expression")
+                        {
+                            let mut v = vec![];
+                            iter_candidates(r, src, &mut v, 0);
+                            if !v.is_empty() {
+                                info.lists.insert(text(l, src).to_string(), v);
+                            }
                         }
                     }
                 }
@@ -238,6 +294,9 @@ fn extract(p: &Parsed, enums: &HashSet<String>) -> FileInfo {
         src,
         enums,
         funcs: &funcs,
+        scope: vec![],
+        params: vec![],
+        loops: vec![],
     };
     cx.walk(root, &mut info, 0);
     info
@@ -342,6 +401,56 @@ struct Extract<'a, 't> {
     src: &'a str,
     enums: &'a HashSet<String>,
     funcs: &'a HashMap<String, Node<'t>>,
+    /// enclosing function names (outermost first)
+    scope: Vec<String>,
+    /// parameter names of each enclosing function (parallel to `scope`)
+    params: Vec<Vec<String>>,
+    /// `for NAME in <iterable>` bindings: loop variable -> candidate expressions
+    loops: Vec<(String, Vec<String>)>,
+}
+
+fn param_names(func: Node, src: &str) -> Vec<String> {
+    let mut out = vec![];
+    let Some(params) = func.child_by_field_name("parameters") else {
+        return out;
+    };
+    let mut c = params.walk();
+    for p in params.named_children(&mut c) {
+        let id = match p.kind() {
+            "identifier" => Some(p),
+            "typed_parameter" => p.named_child(0).filter(|n| n.kind() == "identifier"),
+            "default_parameter" | "typed_default_parameter" => p.child_by_field_name("name"),
+            _ => None,
+        };
+        // keep positions aligned with the call arguments
+        out.push(id.map(|n| text(n, src).to_string()).unwrap_or_default());
+    }
+    out
+}
+
+/// Identifier / attribute expressions inside a tuple, list or conditional
+/// (`for router in (a.router, b.router):`).
+fn iter_candidates(n: Node, src: &str, out: &mut Vec<String>, depth: usize) {
+    if depth > 20 {
+        return;
+    }
+    match n.kind() {
+        "identifier" | "attribute" => out.push(text(n, src).to_string()),
+        "conditional_expression" => {
+            for i in [0, 2] {
+                if let Some(c) = n.named_child(i) {
+                    iter_candidates(c, src, out, depth + 1);
+                }
+            }
+        }
+        "tuple" | "list" | "set" | "parenthesized_expression" | "expression_list" => {
+            let mut c = n.walk();
+            for ch in n.named_children(&mut c) {
+                iter_candidates(ch, src, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl<'a, 't> Extract<'a, 't> {
@@ -349,15 +458,153 @@ impl<'a, 't> Extract<'a, 't> {
         if depth > MAX_DEPTH {
             return;
         }
+        let (mut pushed_scope, mut pushed_loop) = (false, false);
         match node.kind() {
             "decorated_definition" => self.decorated(node, info),
             "assignment" => self.assignment(node, info),
             "call" => self.call(node, info),
+            "return_statement" => self.returned(node, info),
+            "function_definition" => {
+                if let Some(n) = node.child_by_field_name("name") {
+                    self.scope.push(text(n, self.src).to_string());
+                    self.params.push(param_names(node, self.src));
+                    pushed_scope = true;
+                }
+            }
+            "for_statement" => {
+                if let (Some(l), Some(r)) = (
+                    node.child_by_field_name("left")
+                        .filter(|l| l.kind() == "identifier"),
+                    node.child_by_field_name("right"),
+                ) {
+                    let mut raw = vec![];
+                    iter_candidates(r, self.src, &mut raw, 0);
+                    let mut cands = vec![];
+                    for r in raw {
+                        match info.lists.get(&r) {
+                            Some(v) => cands.extend(v.iter().cloned()),
+                            None => cands.push(r),
+                        }
+                    }
+                    self.loops.push((text(l, self.src).to_string(), cands));
+                    pushed_loop = true;
+                }
+            }
             _ => {}
         }
         let mut c = node.walk();
         for ch in node.children(&mut c) {
             self.walk(ch, info, depth + 1);
+        }
+        if pushed_scope {
+            self.scope.pop();
+            self.params.pop();
+        }
+        if pushed_loop {
+            self.loops.pop();
+        }
+    }
+
+    /// Instance key for a name defined at the current scope.
+    fn define_key(&self, name: &str) -> String {
+        if self.scope.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}::{}", self.scope.join("::"), name)
+        }
+    }
+
+    /// Resolve `name` to the innermost local instance (or function parameter)
+    /// that defines it, else return it unchanged (module level / imported /
+    /// attribute chain).
+    fn qualify(&self, name: &str, info: &mut FileInfo, make_param: bool) -> String {
+        for i in (1..=self.scope.len()).rev() {
+            let key = format!("{}::{}", self.scope[..i].join("::"), name);
+            if info.instances.contains_key(&key) {
+                return key;
+            }
+            if make_param && i == 1 && self.params[0].iter().any(|p| p == name) {
+                info.fn_params
+                    .insert(self.scope[0].clone(), self.params[0].clone());
+                info.instances.insert(
+                    key.clone(),
+                    Inst {
+                        prefix: Some(vec![]),
+                        is_app: false,
+                        local: true,
+                        line: 0,
+                        param_of: Some((self.scope[0].clone(), name.to_string())),
+                    },
+                );
+                return key;
+            }
+            if self.params[i - 1].iter().any(|p| p == name) {
+                break;
+            }
+        }
+        name.to_string()
+    }
+
+    fn record_call(&mut self, node: Node<'t>, func: Node<'t>, info: &mut FileInfo) {
+        if !matches!(func.kind(), "identifier" | "attribute") {
+            return;
+        }
+        let Some(args) = arg_list(node) else { return };
+        let mut rec = CallRec {
+            callee: text(func, self.src).to_string(),
+            args: vec![],
+            kwargs: vec![],
+            line: node.start_position().row as u32 + 1,
+        };
+        let mut c = args.walk();
+        for a in args.named_children(&mut c) {
+            let name_of = |n: Node| -> Option<String> {
+                matches!(n.kind(), "identifier" | "attribute")
+                    .then(|| text(n, self.src).to_string())
+            };
+            match a.kind() {
+                "keyword_argument" => {
+                    if let (Some(k), Some(v)) = (
+                        a.child_by_field_name("name"),
+                        a.child_by_field_name("value").and_then(name_of),
+                    ) {
+                        rec.kwargs.push((text(k, self.src).to_string(), v));
+                    }
+                }
+                "comment" | "dictionary_splat" | "list_splat" => {}
+                _ => rec.args.push(name_of(a).unwrap_or_default()),
+            }
+        }
+        if rec.args.iter().all(|a| a.is_empty()) && rec.kwargs.is_empty() {
+            return;
+        }
+        for a in rec
+            .args
+            .iter_mut()
+            .chain(rec.kwargs.iter_mut().map(|(_, v)| v))
+        {
+            if !a.is_empty() {
+                *a = self.qualify(a, info, false);
+            }
+        }
+        info.calls.push(rec);
+    }
+
+    fn returned(&mut self, node: Node<'t>, info: &mut FileInfo) {
+        let Some(v) = node.named_child(0).filter(|v| v.kind() == "identifier") else {
+            return;
+        };
+        let key = self.qualify(text(v, self.src), info, false);
+        if key.contains("::")
+            && info
+                .instances
+                .get(&key)
+                .is_some_and(|i| i.param_of.is_none())
+        {
+            if self.scope.len() == 1 {
+                info.returned_fns.insert(self.scope[0].clone(), key.clone());
+            }
+            info.returned.insert(key);
         }
     }
 
@@ -392,6 +639,12 @@ impl<'a, 't> Extract<'a, 't> {
             return;
         };
         let Some(kind) = self.ctor_kind(func, info) else {
+            if self.scope.is_empty() && matches!(func.kind(), "identifier" | "attribute") {
+                info.aliases.insert(
+                    text(l, self.src).to_string(),
+                    text(func, self.src).to_string(),
+                );
+            }
             return;
         };
         let prefix = if kind == "router" {
@@ -402,13 +655,24 @@ impl<'a, 't> Extract<'a, 't> {
         } else {
             Some(vec![])
         };
-        info.instances.insert(text(l, self.src).to_string(), prefix);
+        let key = self.define_key(text(l, self.src));
+        info.instances.insert(
+            key,
+            Inst {
+                prefix,
+                is_app: kind == "app",
+                local: !self.scope.is_empty(),
+                line: node.start_position().row as u32 + 1,
+                param_of: None,
+            },
+        );
     }
 
     fn call(&mut self, node: Node<'t>, info: &mut FileInfo) {
         let Some(func) = node.child_by_field_name("function") else {
             return;
         };
+        self.record_call(node, func, info);
         if func.kind() != "attribute" {
             return;
         }
@@ -419,7 +683,18 @@ impl<'a, 't> Extract<'a, 't> {
             return;
         };
         let attr = text(attr, self.src);
-        let owner = text(obj, self.src).to_string();
+        if !matches!(
+            attr,
+            "include_router"
+                | "mount"
+                | "add_websocket_route"
+                | "add_api_websocket_route"
+                | "add_api_route"
+        ) {
+            return;
+        }
+        let owner = self.qualify(text(obj, self.src), info, true);
+        let line = node.start_position().row as u32 + 1;
         match attr {
             "include_router" => {
                 let child = positional(node, 0).or_else(|| kwarg(node, self.src, "router"));
@@ -428,10 +703,49 @@ impl<'a, 't> Extract<'a, 't> {
                     None => Some(vec![]),
                     Some(v) => eval_pstr(v, self.src),
                 };
+                let ctext = text(child, self.src).to_string();
+                let looped = if child.kind() == "identifier" {
+                    self.loops.iter().rev().find(|(n, _)| *n == ctext)
+                } else {
+                    None
+                };
+                let children: Vec<String> = match looped {
+                    Some((_, c)) if !c.is_empty() => c.clone(),
+                    Some(_) => vec![String::new()],
+                    None => vec![ctext],
+                };
+                for child in children {
+                    info.includes.push(Include {
+                        parent: owner.clone(),
+                        child,
+                        prefix: prefix.clone(),
+                        line,
+                        mount: false,
+                    });
+                }
+            }
+            "mount" => {
+                let path = positional(node, 0).or_else(|| kwarg(node, self.src, "path"));
+                let app = positional(node, 1).or_else(|| kwarg(node, self.src, "app"));
+                let (Some(path), Some(app)) = (path, app) else {
+                    return;
+                };
                 info.includes.push(Include {
                     parent: owner,
-                    child: text(child, self.src).to_string(),
-                    prefix,
+                    child: text(app, self.src).to_string(),
+                    prefix: eval_pstr(path, self.src),
+                    line,
+                    mount: true,
+                });
+            }
+            "add_websocket_route" | "add_api_websocket_route" => {
+                let path = positional(node, 0).or_else(|| kwarg(node, self.src, "path"));
+                info.skipped.push(Skipped {
+                    owner,
+                    path: path
+                        .map(|p| text(p, self.src).to_string())
+                        .unwrap_or_default(),
+                    line,
                 });
             }
             "add_api_route" => {
@@ -457,7 +771,7 @@ impl<'a, 't> Extract<'a, 't> {
                     owner,
                     methods,
                     path: eval_pstr(path, self.src),
-                    line: node.start_position().row as u32 + 1,
+                    line,
                     handler,
                     params,
                 });
@@ -501,6 +815,18 @@ impl<'a, 't> Extract<'a, 't> {
                 continue;
             };
             let attr = text(attr, self.src);
+            if attr == "websocket" {
+                let path = positional(call, 0).or_else(|| kwarg(call, self.src, "path"));
+                let owner = self.qualify(text(obj, self.src), info, true);
+                info.skipped.push(Skipped {
+                    owner,
+                    path: path
+                        .map(|p| text(p, self.src).to_string())
+                        .unwrap_or_default(),
+                    line: dec.start_position().row as u32 + 1,
+                });
+                continue;
+            }
             let methods = if HTTP_METHODS.contains(&attr) {
                 Some(vec![attr.to_ascii_uppercase()])
             } else if attr == "api_route" {
@@ -517,8 +843,9 @@ impl<'a, 't> Extract<'a, 't> {
             let params = params
                 .get_or_insert_with(|| classify_params(def, self.src, self.enums))
                 .clone();
+            let owner = self.qualify(text(obj, self.src), info, true);
             info.routes.push(RouteDecl {
-                owner: text(obj, self.src).to_string(),
+                owner,
                 methods,
                 path: eval_pstr(path, self.src),
                 line: dec.start_position().row as u32 + 1,
@@ -882,13 +1209,60 @@ fn classify_ann(n: Node, src: &str, enums: &HashSet<String>, depth: usize) -> Ve
 // Cross-module resolution and emission
 // ---------------------------------------------------------------------------
 
+enum Ev {
+    /// (file index, index into `FileInfo::routes`)
+    Route(usize, usize),
+    /// `include_router` / `mount` of a child instance with its (static) prefix
+    Child(Key, Option<String>),
+}
+
+type EventKey = (bool, usize, u32);
+
 struct Resolver<'a> {
     infos: &'a [FileInfo],
     by_rel: HashMap<&'a str, usize>,
     /// dotted suffix -> candidate files
     by_suffix: HashMap<String, Vec<usize>>,
-    /// child instance -> [(parent instance, resolved include prefix)]
-    parents: HashMap<Key, Vec<(Key, Option<String>)>>,
+    /// module-level `app = create_app()` -> the instance the factory returns
+    alias: HashMap<Key, Key>,
+    /// instance -> registration events in runtime order
+    events: HashMap<Key, Vec<(EventKey, Ev)>>,
+    /// instances that were included / mounted somewhere
+    has_parent: HashSet<Key>,
+    /// include_router calls (outside tests) whose parent or child is not a known instance
+    unresolved_includes: usize,
+    /// (file, line, description) of mounts that are not followed
+    skipped_mounts: Vec<(usize, u32, String)>,
+    skipped_ws: Vec<(usize, u32, String)>,
+}
+
+struct Walk {
+    visiting: Vec<Key>,
+    visited: HashSet<Key>,
+    seen: HashSet<(String, String, String, u32)>,
+    out: Vec<(Route, bool)>,
+}
+
+fn is_test_file(rel: &str) -> bool {
+    let mut it = rel.split('/').peekable();
+    while let Some(c) = it.next() {
+        if it.peek().is_some() {
+            if matches!(c, "tests" | "test" | "testing") {
+                return true;
+            }
+        } else {
+            return c.starts_with("test_") || c.ends_with("_test.py") || c == "conftest.py";
+        }
+    }
+    false
+}
+
+fn list_some(items: &[String], n: usize) -> String {
+    let mut s = items.iter().take(n).cloned().collect::<Vec<_>>().join(", ");
+    if items.len() > n {
+        s.push_str(&format!(", and {} more", items.len() - n));
+    }
+    s
 }
 
 impl<'a> Resolver<'a> {
@@ -912,35 +1286,146 @@ impl<'a> Resolver<'a> {
             infos,
             by_rel,
             by_suffix,
-            parents: HashMap::new(),
+            alias: HashMap::new(),
+            events: HashMap::new(),
+            has_parent: HashSet::new(),
+            unresolved_includes: 0,
+            skipped_mounts: vec![],
+            skipped_ws: vec![],
         };
-        r.build_edges();
+        r.build_aliases();
+        r.build_events();
         r
     }
 
-    fn build_edges(&mut self) {
-        let mut edges: Vec<(Key, Key, Option<String>)> = vec![];
+    fn build_aliases(&mut self) {
+        let mut alias = HashMap::new();
         for (fi, f) in self.infos.iter().enumerate() {
-            for inc in &f.includes {
-                let (Some(parent), Some(child)) = (
-                    self.resolve_inst(fi, &inc.parent),
-                    self.resolve_inst(fi, &inc.child),
-                ) else {
-                    continue;
-                };
-                if parent == child {
+            for (name, callee) in &f.aliases {
+                if f.instances.contains_key(name) {
                     continue;
                 }
+                if let Some((dfi, fname)) =
+                    self.resolve_sym(fi, callee, &|f, n| f.returned_fns.contains_key(n))
+                {
+                    let target = self.infos[dfi].returned_fns[&fname].clone();
+                    alias.insert((fi, name.clone()), (dfi, target));
+                }
+            }
+        }
+        self.alias = alias;
+    }
+
+    fn build_events(&mut self) {
+        let mut events: HashMap<Key, Vec<(EventKey, Ev)>> = HashMap::new();
+        let mut has_parent = HashSet::new();
+        let (mut unresolved, mut mounts, mut ws) = (0usize, vec![], vec![]);
+        for (fi, f) in self.infos.iter().enumerate() {
+            for (ri, r) in f.routes.iter().enumerate() {
+                if let Some(k) = self.resolve_inst(fi, &r.owner) {
+                    events
+                        .entry(k.clone())
+                        .or_default()
+                        .push(((fi != k.0, fi, r.line), Ev::Route(fi, ri)));
+                }
+            }
+            for sk in &f.skipped {
+                if self.resolve_inst(fi, &sk.owner).is_some() {
+                    ws.push((fi, sk.line, sk.path.clone()));
+                }
+            }
+            for inc in &f.includes {
+                let parent = self.resolve_inst(fi, &inc.parent);
+                let child = if inc.child.is_empty() {
+                    None
+                } else {
+                    self.resolve_inst(fi, &inc.child)
+                };
                 let prefix = inc.prefix.as_ref().and_then(|p| self.eval_parts(fi, p, 0));
-                edges.push((child, parent, prefix));
+                if inc.mount {
+                    let Some(parent) = parent else { continue };
+                    match child {
+                        Some(c) if c != parent && self.infos[c.0].instances[&c.1].is_app => {
+                            has_parent.insert(c.clone());
+                            events
+                                .entry(parent.clone())
+                                .or_default()
+                                .push(((fi != parent.0, fi, inc.line), Ev::Child(c, prefix)));
+                        }
+                        _ => mounts.push((
+                            fi,
+                            inc.line,
+                            prefix.unwrap_or_else(|| "(dynamic)".to_string()),
+                        )),
+                    }
+                    continue;
+                }
+                match (parent, child) {
+                    (Some(p), Some(c)) if p != c => {
+                        has_parent.insert(c.clone());
+                        events
+                            .entry(p.clone())
+                            .or_default()
+                            .push(((fi != p.0, fi, inc.line), Ev::Child(c, prefix)));
+                    }
+                    (Some(_), Some(_)) => {}
+                    _ => {
+                        if !is_test_file(&f.rel) {
+                            unresolved += 1;
+                        }
+                    }
+                }
             }
         }
-        for (child, parent, prefix) in edges {
-            let v = self.parents.entry(child).or_default();
-            if !v.iter().any(|(p, x)| *p == parent && *x == prefix) {
-                v.push((parent, prefix));
+        // `setup(app)`-style functions: the call site is where their routes get registered.
+        for (fi, f) in self.infos.iter().enumerate() {
+            for call in &f.calls {
+                let Some((dfi, fname)) =
+                    self.resolve_sym(fi, &call.callee, &|f, n| f.fn_params.contains_key(n))
+                else {
+                    continue;
+                };
+                let params = &self.infos[dfi].fn_params[&fname];
+                let named = call
+                    .args
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, a)| params.get(i).map(|p| (p.as_str(), a.as_str())));
+                let kw = call.kwargs.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+                for (param, arg) in named.chain(kw) {
+                    if param.is_empty() || arg.is_empty() {
+                        continue;
+                    }
+                    let vk = (dfi, format!("{}::{}", fname, param));
+                    let Some(x) = self.resolve_inst(fi, arg) else {
+                        continue;
+                    };
+                    if x == vk || !self.infos[dfi].instances.contains_key(&vk.1) {
+                        continue;
+                    }
+                    has_parent.insert(vk.clone());
+                    events.entry(x.clone()).or_default().push((
+                        (fi != x.0, fi, call.line),
+                        Ev::Child(vk, Some(String::new())),
+                    ));
+                }
             }
         }
+        for (fi, f) in self.infos.iter().enumerate() {
+            for (name, i) in &f.instances {
+                if i.param_of.is_some() && !has_parent.contains(&(fi, name.clone())) {
+                    unresolved += 1;
+                }
+            }
+        }
+        for v in events.values_mut() {
+            v.sort_by_key(|(k, _)| *k);
+        }
+        self.events = events;
+        self.has_parent = has_parent;
+        self.unresolved_includes = unresolved;
+        self.skipped_mounts = mounts;
+        self.skipped_ws = ws;
     }
 
     fn resolve_module(&self, from: usize, level: usize, dotted: &str) -> Option<usize> {
@@ -1014,6 +1499,10 @@ impl<'a> Resolver<'a> {
         expr: &str,
         has: &dyn Fn(&FileInfo, &str) -> bool,
     ) -> Option<Key> {
+        if expr.contains("::") {
+            // function-local instance, qualified by the extractor
+            return has(&self.infos[fi], expr).then(|| (fi, expr.to_string()));
+        }
         let parts: Vec<&str> = expr.split('.').map(|s| s.trim()).collect();
         if parts
             .iter()
@@ -1043,7 +1532,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_inst(&self, fi: usize, expr: &str) -> Option<Key> {
-        self.resolve_sym(fi, expr, &|f, n| f.instances.contains_key(n))
+        let k = self.resolve_sym(fi, expr, &|f, n| {
+            f.instances.contains_key(n) || f.aliases.contains_key(n)
+        })?;
+        match self.alias.get(&k) {
+            Some(t) => Some(t.clone()),
+            None => self.infos[k.0].instances.contains_key(&k.1).then_some(k),
+        }
     }
 
     fn eval_parts(&self, fi: usize, parts: &PStr, depth: usize) -> Option<String> {
@@ -1064,49 +1559,52 @@ impl<'a> Resolver<'a> {
         Some(out)
     }
 
+    fn inst(&self, k: &Key) -> &Inst {
+        &self.infos[k.0].instances[&k.1]
+    }
+
     fn own_prefix(&self, k: &Key) -> Option<String> {
-        let p = self.infos[k.0].instances.get(&k.1)?.as_ref()?;
+        let p = self.inst(k).prefix.as_ref()?;
         self.eval_parts(k.0, p, 0)
     }
 
-    /// Prefixes accumulated above (excluding) router `k`.
-    fn base(&self, k: &Key, visiting: &mut Vec<Key>) -> Vec<String> {
-        let Some(parents) = self.parents.get(k) else {
-            return vec![String::new()];
+    /// Depth-first expansion in registration order. `acc` is everything above
+    /// router `k` (parents' own prefixes + include prefixes), so the final
+    /// path is the plain concatenation Starlette builds, trailing slash included.
+    fn walk(&self, k: &Key, acc: &str, st: &mut Walk) {
+        st.visited.insert(k.clone());
+        if st.visiting.contains(k) {
+            return;
+        }
+        let Some(own) = self.own_prefix(k) else {
+            return;
         };
-        if visiting.contains(k) {
-            return vec![];
-        }
-        visiting.push(k.clone());
-        let mut out = vec![];
-        for (p, inc) in parents {
-            let (Some(inc), Some(own)) = (inc, self.own_prefix(p)) else {
-                continue;
-            };
-            for b in self.base(p, visiting) {
-                out.push(format!("{}{}{}", b, own, inc));
-            }
-        }
-        visiting.pop();
-        out
-    }
-
-    fn emit(&self) -> Vec<Route> {
-        let mut out: Vec<Route> = vec![];
-        let mut seen: HashSet<(String, String, String, u32)> = HashSet::new();
-        for (fi, f) in self.infos.iter().enumerate() {
-            for r in &f.routes {
-                let Some(k) = self.resolve_inst(fi, &r.owner) else {
-                    continue;
-                };
-                let Some(own) = self.own_prefix(&k) else {
-                    continue;
-                };
-                let Some(path) = r.path.as_ref().and_then(|p| self.eval_parts(fi, p, 0)) else {
-                    continue;
-                };
-                for b in self.base(&k, &mut vec![]) {
-                    let full = naming::normalize_path(&format!("{}{}/{}", b, own, path));
+        let Some(events) = self.events.get(k) else {
+            return;
+        };
+        st.visiting.push(k.clone());
+        for (_, ev) in events {
+            match ev {
+                Ev::Child(child, prefix) => {
+                    if let Some(p) = prefix {
+                        self.walk(child, &format!("{}{}{}", acc, own, p), st);
+                    } else {
+                        st.visited.insert(child.clone());
+                    }
+                }
+                Ev::Route(fi, ri) => {
+                    let f = &self.infos[*fi];
+                    let r = &f.routes[*ri];
+                    let Some(mut path) = r.path.as_ref().and_then(|p| self.eval_parts(*fi, p, 0))
+                    else {
+                        continue;
+                    };
+                    if !path.is_empty() && !path.starts_with('/') {
+                        path.insert(0, '/');
+                    }
+                    let raw = format!("{}{}{}", acc, own, path);
+                    let full = naming::normalize_path_keep_slash(&raw);
+                    let multi = raw.contains(":path}");
                     let pp = naming::path_params(&full);
                     let q: Vec<String> = r
                         .params
@@ -1115,25 +1613,177 @@ impl<'a> Resolver<'a> {
                         .cloned()
                         .collect();
                     for m in &r.methods {
-                        if !seen.insert((m.clone(), full.clone(), f.rel.clone(), r.line)) {
+                        if !st
+                            .seen
+                            .insert((m.clone(), full.clone(), f.rel.clone(), r.line))
+                        {
                             continue;
                         }
-                        out.push(Route {
-                            method: m.clone(),
-                            path: full.clone(),
-                            file: f.rel.clone(),
-                            line: r.line,
-                            handler: r.handler.clone(),
-                            query_params: q.clone(),
-                            framework: FRAMEWORK.to_string(),
-                        });
+                        st.out.push((
+                            Route {
+                                method: m.clone(),
+                                path: full.clone(),
+                                file: f.rel.clone(),
+                                line: r.line,
+                                handler: r.handler.clone(),
+                                query_params: q.clone(),
+                                framework: FRAMEWORK.to_string(),
+                            },
+                            multi,
+                        ));
                     }
                 }
             }
         }
-        out.sort_by(|a, b| {
-            (&a.file, a.line, &a.path, &a.method).cmp(&(&b.file, b.line, &b.path, &b.method))
-        });
-        out
+        st.visiting.pop();
+    }
+
+    fn emit(&self) -> (Vec<Route>, Vec<String>) {
+        let mut warnings: Vec<String> = vec![];
+        let mut keys: Vec<Key> = vec![];
+        for (fi, f) in self.infos.iter().enumerate() {
+            for name in f.instances.keys() {
+                keys.push((fi, name.clone()));
+            }
+        }
+        keys.sort_by_key(|k| (k.0, self.inst(k).line, k.1.clone()));
+
+        let app_roots: Vec<Key> = keys
+            .iter()
+            .filter(|k| {
+                let i = self.inst(k);
+                i.is_app
+                    && !self.has_parent.contains(k)
+                    && (!i.local || self.infos[k.0].returned.contains(&k.1))
+            })
+            .cloned()
+            .collect();
+        let orphans: Vec<Key> = keys
+            .iter()
+            .filter(|k| !self.inst(k).is_app && !self.has_parent.contains(k))
+            .cloned()
+            .collect();
+        let roots: Vec<Key> = if app_roots.is_empty() {
+            warnings.push(
+                "no module-level FastAPI() app (or app factory) found; emitting the routes of every router, \
+                 so routes that are never included in an app may be listed"
+                    .to_string(),
+            );
+            keys.iter()
+                .filter(|k| !self.has_parent.contains(k))
+                .cloned()
+                .collect()
+        } else if self.unresolved_includes > 0 && !orphans.is_empty() {
+            warnings.push(format!(
+                "{} include_router() call(s) could not be resolved statically; \
+                 routers that are not included anywhere are still emitted",
+                self.unresolved_includes
+            ));
+            let mut r = app_roots.clone();
+            r.extend(orphans.iter().cloned());
+            r
+        } else {
+            app_roots.clone()
+        };
+
+        let mut st = Walk {
+            visiting: vec![],
+            visited: HashSet::new(),
+            seen: HashSet::new(),
+            out: vec![],
+        };
+        for r in &roots {
+            self.walk(r, "", &mut st);
+        }
+
+        // Routers / apps that no app reaches.
+        let mut dead: HashMap<Key, usize> = HashMap::new();
+        for (fi, f) in self.infos.iter().enumerate() {
+            for r in &f.routes {
+                if let Some(k) = self.resolve_inst(fi, &r.owner) {
+                    if !st.visited.contains(&k) {
+                        *dead.entry(k).or_default() += r.methods.len();
+                    }
+                }
+            }
+        }
+        if !dead.is_empty() {
+            let mut d: Vec<(Key, usize)> = dead.into_iter().collect();
+            d.sort_by_key(|(k, _)| (k.0, self.inst(k).line));
+            let n: usize = d.iter().map(|(_, n)| n).sum();
+            let items: Vec<String> = d
+                .iter()
+                .map(|(k, n)| {
+                    format!(
+                        "{} `{}` ({}:{}, {} route(s))",
+                        if self.inst(k).is_app { "app" } else { "router" },
+                        k.1.rsplit("::").next().unwrap_or(&k.1),
+                        self.infos[k.0].rel,
+                        self.inst(k).line,
+                        n
+                    )
+                })
+                .collect();
+            warnings.push(format!(
+                "skipped {} route(s) on {} router/app object(s) that no module-level FastAPI app includes \
+                 (never passed to include_router / mount, or created inside a function): {}",
+                n,
+                d.len(),
+                list_some(&items, 6)
+            ));
+        }
+
+        // Duplicate method + path: FastAPI serves the first registered route.
+        let mut first: HashMap<(String, String), usize> = HashMap::new();
+        for (i, (r, _)) in st.out.iter().enumerate() {
+            match first.get(&(r.method.clone(), r.path.clone())) {
+                None => {
+                    first.insert((r.method.clone(), r.path.clone()), i);
+                }
+                Some(&j) => {
+                    let w = &st.out[j].0;
+                    warnings.push(format!(
+                        "duplicate route {} {}: {}:{} is shadowed by {}:{} (FastAPI serves the first registered route)",
+                        r.method, r.path, r.file, r.line, w.file, w.line
+                    ));
+                }
+            }
+        }
+
+        let multi: Vec<String> = st
+            .out
+            .iter()
+            .filter(|(_, m)| *m)
+            .map(|(r, _)| format!("{} {} ({}:{})", r.method, r.path, r.file, r.line))
+            .collect();
+        if !multi.is_empty() {
+            warnings.push(format!(
+                "{} route(s) use a `{{name:path}}` converter, which matches several path segments (the parameter is written as `{{name}}`): {}",
+                multi.len(),
+                list_some(&multi, 8)
+            ));
+        }
+
+        let loc = |(fi, line, p): &(usize, u32, String)| {
+            format!("{} ({}:{})", p, self.infos[*fi].rel, line)
+        };
+        if !self.skipped_ws.is_empty() || !self.skipped_mounts.is_empty() {
+            let mut parts = vec![];
+            if !self.skipped_ws.is_empty() {
+                let v: Vec<String> = self.skipped_ws.iter().map(loc).collect();
+                parts.push(format!(
+                    "{} websocket route(s): {}",
+                    v.len(),
+                    list_some(&v, 6)
+                ));
+            }
+            if !self.skipped_mounts.is_empty() {
+                let v: Vec<String> = self.skipped_mounts.iter().map(loc).collect();
+                parts.push(format!("{} mount(s): {}", v.len(), list_some(&v, 6)));
+            }
+            warnings.push(format!("not scanned: {}", parts.join("; ")));
+        }
+
+        (st.out.into_iter().map(|(r, _)| r).collect(), warnings)
     }
 }

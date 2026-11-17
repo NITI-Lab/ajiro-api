@@ -48,8 +48,19 @@ mock: {}
 | `depends_on` | 文字列の配列 | いいえ | 先に実行するエンドポイントの `id`。存在しない `id` は `validate` がエラーにする |
 | `request` | オブジェクト | はい | 基本のリクエスト |
 | `source` | オブジェクト | いいえ | `scan` が書く。**手で編集しない** |
-| `tests` | 配列 | いいえ | テストケース。人とAIが書く。`scan` は触らない。空なら暗黙の `smoke` テスト（ステータス500未満）を実行。ただし `smoke` を送るのは GET・HEAD・OPTIONS だけで、POST・PUT・PATCH・DELETE はデータを変えうるので送らずにスキップする（`test --smoke-unsafe` で送る） |
+| `tests` | 配列 | いいえ | テストケース。人とAIが書く。`scan` は触らない。空なら暗黙の `smoke` テスト（ステータス500未満。4xx は成功扱いで警告を出す）を実行。ただし `smoke` を送るのは GET・HEAD・OPTIONS だけで、POST・PUT・PATCH・DELETE はデータを変えうるので送らずにスキップする（`test --smoke-unsafe` で送る） |
 | `mock` | オブジェクト | いいえ | `ajiro-api mock` が返すサンプルレスポンス |
+
+### `id` の自動命名（`scan`）
+
+新規ファイルの `id` は `<静的セグメント>.<アクション>` です。既存ファイルの `id` は（メソッド+パスで照合され）変更されません。
+
+- パラメータと先頭の `api` / `v1` は除きます（`/api/v1/users/{id}` → `users`）。
+- アクション: `POST` create / `PUT` replace / `PATCH` update / `DELETE` delete / その他はメソッド名。
+- `GET`: 末尾がパラメータなら `get`。末尾が静的セグメントなら、複数形に見える（`s` で終わる。ただし `ss`/`us`/`is` を除く）か、`list` `search` `history` などの集合名なら `list`、それ以外（`health`, `me`, `detail`）は `get`。
+- 末尾セグメントがすでにアクション（または同義語 create/new/add、update/edit、delete/remove）なら重ねません（`/sessions/create` → `sessions.create`）。
+- `{item_id}.png` のようにパラメータとリテラルが混在するセグメントは、リテラル部分のみ（`png`）を残し、パラメータ扱いとして `get` になります（`w.og.png.get`）。
+- 同じ id が衝突する場合は走査順に依存せず決まります。`api`/`vN` を落とさず、パラメータ名を位置どおりに含めた形（例 `medical.offices.medical-office-id.users.list`、`api.health.get`）を使い、装飾のない素のルート（`/health`, `/medical/offices/users`）が基本形を保ちます。既存ファイルの id と衝突する場合も同様です。それでも同一なら `-2`, `-3` を付けます。
 
 ### `request`
 
@@ -62,7 +73,7 @@ mock: {}
 | `headers` | マップ（文字列） | いいえ | リクエストヘッダー。秘密情報は書かず `{{ env.NAME }}` を使う |
 | `body` | 任意のYAML値 | いいえ | リクエストボディ。オブジェクトや配列はJSONで送られる |
 
-フレームワーク固有のパス表記は、`scan` が次のように正規化します。`:id`（Express・Hono・Echo）、`[id]`（Next.js）、`{id:int}`（FastAPI）、`{id...}`（Go）はすべて `{id}` になります。
+フレームワーク固有のパス表記は、`scan` が次のように正規化します。`:id`（Express・Hono・Echo）、`[id]`（Next.js）、`{id:int}`（FastAPI）、`{id...}`（Go）はすべて `{id}` になります。末尾の `/` は通常取り除かれますが、FastAPI では `/items` と `/items/` が別のルート（もう一方はリダイレクト）なので、コード上のパスどおり（`/items/` など）に保持されます。FastAPI の `{name:path}` は `{name}` になり、複数セグメントに一致する旨の警告が出ます。FastAPI アプリから `include_router` で到達できないルーターのルートは出力されず、警告にまとめられます。
 
 ### `source`（`scan` が書く）
 
@@ -230,8 +241,8 @@ timeout_ms: 10000
 | --- | --- | --- |
 | `version` | （必須） | `1` |
 | `framework` | 自動判定 | `nextjs` `hono` `fastapi` `express` `go-nethttp` `go-chi` `go-echo` |
-| `sources` | `["."]` | スキャン対象のディレクトリ（プロジェクトルートからの相対） |
-| `exclude` | なし | スキャンから除外するパスの部分文字列 |
+| `sources` | `["."]` | スキャン対象のディレクトリ（プロジェクトルートからの相対）。同じメソッド・パスのルートは先頭の `sources` のものを採用。Next.js は `next.config.*` の文字列リテラル `basePath` をパスに反映（アプリごとに `ajiro-api.yaml` を分ける） |
+| `exclude` | なし | スキャンから除外するパスの部分文字列。これとは別に、`.gitignore` に一致するファイルとテストコード（`tests/` `test/` `__tests__/` `test_*.py` `*_test.py` `conftest.py` `*_test.go` `*.test.*` `*.spec.*`）は常に除外 |
 | `api_dir` | `api` | エンドポイントYAMLのディレクトリ |
 | `env_file` | `.env` | 秘密情報を置くdotenvファイル。`{{ env.NAME }}` で参照 |
 | `default_env` | `local` | `--env` を省略したときの環境 |

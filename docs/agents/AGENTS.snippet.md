@@ -32,7 +32,7 @@ If `ajiro-api` is not on PATH, use `npx -y ajiro-api <command>` instead. If `aji
 - Do not weaken assertions just to get green: do not delete failing tests, loosen status checks, or use `skip: true` to hide a real bug.
 - Update snapshots (`ajiro-api test -u`) only when the change is intended, and review the diff.
 - Use unique values for created data (`{{ $randomEmail }}`, `{{ $uuid }}`) so re-runs do not collide.
-- An endpoint with empty `tests` only gets an implicit smoke test (status < 500), and only for GET/HEAD/OPTIONS: POST/PUT/PATCH/DELETE are skipped unless `--smoke-unsafe`. That is not enough for new work.
+- An endpoint with empty `tests` only gets an implicit smoke test (status < 500; a 4xx passes with a `warnings` entry — a 401/403 there means the run is not logged in, so fix `setup`/`headers` first), and only for GET/HEAD/OPTIONS: POST/PUT/PATCH/DELETE are skipped unless `--smoke-unsafe`. That is not enough for new work.
 - When most endpoints need a login, list the login endpoint in the environment `setup` and send the captured token or cookie (`cookie:<name>`) through the environment `headers`.
 
 ### YAML cheat sheet

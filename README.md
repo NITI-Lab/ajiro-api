@@ -49,7 +49,7 @@ ajiro-api scan            # reads routes and writes YAML into api/
 ajiro-api test            # runs every endpoint and checks the responses
 ```
 
-Endpoints with empty `tests:` get an implicit `smoke` test (status < 500). It is only sent to GET, HEAD and OPTIONS; POST, PUT, PATCH and DELETE may change data and are skipped unless you pass `ajiro-api test --smoke-unsafe`. For APIs behind a login, list the login endpoint in the environment's `setup`: it runs first, and the token or cookie it captures can be sent with every request through the environment `headers` (see the [YAML reference](docs/yaml-reference.md)).
+Endpoints with empty `tests:` get an implicit `smoke` test (status < 500; a 4xx passes with a warning, since a 401 usually means the run is not logged in). It is only sent to GET, HEAD and OPTIONS; POST, PUT, PATCH and DELETE may change data and are skipped unless you pass `ajiro-api test --smoke-unsafe`. For APIs behind a login, list the login endpoint in the environment's `setup`: it runs first, and the token or cookie it captures can be sent with every request through the environment `headers` (see the [YAML reference](docs/yaml-reference.md)).
 
 ## YAML example
 
@@ -131,7 +131,7 @@ Paste [docs/agents/AGENTS.snippet.md](docs/agents/AGENTS.snippet.md) into your p
 | Command | Description |
 | --- | --- |
 | `ajiro-api init` | Create `ajiro-api.yaml` and `api/`; detect the framework |
-| `ajiro-api scan` | Statically analyse routes and write/update YAML. `--check` for CI drift detection, `--dry-run` to preview |
+| `ajiro-api scan` | Statically analyse routes and write/update YAML. `--check` for CI drift detection (add `--ignore-lines` to tolerate routes that only moved), `--dry-run` to preview |
 | `ajiro-api test` | Run the YAML and check responses. `--json`, `--junit <FILE>`, `-u` (update snapshots), `--env`, `--bail`, ... |
 | `ajiro-api list` | List defined endpoints |
 | `ajiro-api validate` | Validate syntax, schema and references (duplicate ids, `depends_on`) |
@@ -165,6 +165,7 @@ GraphQL, gRPC and WebSocket are out of scope.
 
 ```bash
 ajiro-api scan --check                          # exit 1 if YAML is out of date
+ajiro-api scan --check --ignore-lines           # ...but not when routes only moved to another line
 ajiro-api test --env ci --junit report.xml      # also writes JUnit XML
 ```
 

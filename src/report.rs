@@ -31,6 +31,10 @@ pub struct ScanReport {
     pub created: usize,
     pub updated: usize,
     pub unchanged: usize,
+    /// How many of the `updated` files changed only `source.line` (the route
+    /// moved inside the same file). `--check` does not count them as drift.
+    #[serde(default)]
+    pub line_only: usize,
     /// YAML files (relative paths) whose route no longer exists in the code.
     /// They are never deleted automatically.
     pub stale: Vec<String>,
@@ -55,6 +59,9 @@ pub struct ScanEntry {
     pub file: String,
     pub source: SourceInfo,
     pub status: ScanStatus,
+    /// `status == updated` and only `source.line` changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub line_only: bool,
 }
 
 // ----------------------------------------------------------------- test ---
@@ -98,6 +105,10 @@ pub struct TestSummary {
     pub skipped: usize,
     /// Tests that could not run (connection refused, template error, ...).
     pub errors: usize,
+    /// Results that passed but carry `warnings` (e.g. a smoke check that got
+    /// 401). They do not make the run fail.
+    #[serde(default)]
+    pub warnings: usize,
     pub duration_ms: u64,
 }
 
@@ -133,6 +144,11 @@ pub struct TestResult {
     /// Where the handler lives in the code, from the endpoint `source`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceInfo>,
+    /// Things worth a look that do not fail the test, e.g. a smoke check that
+    /// passed with a 4xx (the request was probably unauthenticated or
+    /// incomplete, so it proves little).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

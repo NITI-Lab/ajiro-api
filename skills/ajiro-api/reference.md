@@ -25,9 +25,20 @@ source:                    # written by `scan`; NEVER edit
   file: src/routes/users.ts
   line: 42
   handler: createUser      # optional
-tests: []                  # yours; empty = implicit smoke test (status < 500; GET/HEAD/OPTIONS only unless --smoke-unsafe)
+tests: []                  # yours; empty = implicit smoke test (status < 500, 4xx warns; GET/HEAD/OPTIONS only unless --smoke-unsafe)
 mock: {}                   # yours; used by `ajiro-api mock`
 ```
+
+## Endpoint ids (`scan`)
+
+New files get `id = <static segments>.<action>`. Ids of existing files never change (they are matched by method + path).
+
+- Parameters and leading `api` / `vN` segments are dropped (`/api/v1/users/{id}` -> `users`).
+- Actions: `POST` create, `PUT` replace, `PATCH` update, `DELETE` delete, other methods use the lower-case method name.
+- `GET`: `get` when the path ends with a parameter. When it ends with a static segment: `list` if it looks like a collection (ends with `s` but not `ss`/`us`/`is`, or a word such as `list`, `search`, `history`), otherwise `get` (`health`, `me`, `detail`).
+- The action is not repeated when the last segment already is it or a synonym (create/new/add, update/edit, delete/remove): `/sessions/create` -> `sessions.create`.
+- A segment mixing a parameter and literal text (`{item_id}.png`) keeps only the literal (`png`) and counts as a parameter: `w.og.png.get`.
+- Collisions are resolved independently of scan order: colliding routes use the full form (the `api`/`vN` prefix kept, parameter names at their positions, e.g. `medical.offices.medical-office-id.users.list`, `api.health.get`); the plain route (`/health`, `/medical/offices/users`) keeps the base id. An id already used by an existing file is never reused. Only identical results get `-2`, `-3`.
 
 ## Test case
 

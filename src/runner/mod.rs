@@ -232,6 +232,24 @@ struct Built {
     body: Option<Value>,
 }
 
+/// Warning for an implicit smoke check that passed (status < 500) with a 4xx:
+/// the check proves little, and on an API behind a login it usually means the
+/// run is not authenticated at all.
+fn smoke_warning(status: u16, env: &str, file: &str) -> Option<String> {
+    match status {
+        401 | 403 | 407 => Some(format!(
+            "smoke check passed with status {status}: the request was not authenticated, not allowed, or rejected by a middleware \
+             (CSRF/origin guard, ...), so it proves little; if the API needs a login, log in through `environments.{env}.setup` \
+             and send the token or cookie with `headers`; otherwise add tests to {file} with the headers the guard expects"
+        )),
+        400..=499 => Some(format!(
+            "smoke check passed with status {status}: the endpoint probably needs parameters, a body or an existing resource; \
+             add tests to {file}"
+        )),
+        _ => None,
+    }
+}
+
 /// Methods the implicit smoke test may send without asking (RFC 9110 safe
 /// methods).
 fn is_safe_method(method: &str) -> bool {
@@ -527,6 +545,9 @@ fn run_inner(project: &Project, opts: &TestOptions) -> Result<(TestReport, Vec<(
             TestStatus::Skipped => summary.skipped += 1,
             TestStatus::Error => summary.errors += 1,
         }
+        if !r.warnings.is_empty() {
+            summary.warnings += 1;
+        }
     }
     summary.duration_ms = started.elapsed().as_millis() as u64;
     let ok = summary.failed == 0 && summary.errors == 0 && load_errors.is_empty();
@@ -770,6 +791,7 @@ impl Run<'_> {
             failures: vec![],
             error: None,
             source: ep.def.source.clone(),
+            warnings: vec![],
         };
         let skip = |mut r: TestResult, reason: String| {
             r.status = TestStatus::Skipped;
@@ -885,6 +907,9 @@ impl Run<'_> {
                     ),
                 });
             }
+            if let Some(w) = smoke_warning(resp.status, &self.env_name, &ep.rel_path) {
+                result.warnings.push(w);
+            }
         } else {
             let api_dir = self.project.api_dir();
             let snapshot_path = api_dir
@@ -999,6 +1024,23 @@ fn truncate_log(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smoke_warning_401_403_mentions_middleware_and_setup() {
+        for status in [401u16, 403, 407] {
+            let w = smoke_warning(status, "local", "api/x.yaml").unwrap();
+            assert!(
+                w.contains("not authenticated, not allowed, or rejected by a middleware"),
+                "{w}"
+            );
+            assert!(w.contains("CSRF/origin guard"), "{w}");
+            assert!(w.contains("environments.local.setup"), "{w}");
+        }
+        assert!(smoke_warning(404, "local", "f")
+            .unwrap()
+            .contains("parameters"));
+        assert!(smoke_warning(200, "local", "f").is_none());
+    }
+
     use super::*;
 
     #[test]

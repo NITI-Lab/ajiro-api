@@ -8,7 +8,8 @@ use crate::naming;
 use anyhow::Result;
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::OnceLock;
 use tree_sitter::{Node, Parser, Tree};
 
@@ -256,39 +257,332 @@ fn norm_join(dir: &str, spec: &str) -> String {
     parts.join("/")
 }
 
-/// Resolve an import specifier to the index of a known file.
-fn resolve_module(from_rel: &str, spec: &str, files: &HashMap<String, usize>) -> Option<usize> {
-    let bases: Vec<String> =
-        if spec.starts_with("./") || spec.starts_with("../") || spec == "." || spec == ".." {
-            let dir = from_rel.rsplit_once('/').map(|x| x.0).unwrap_or("");
-            vec![norm_join(dir, spec)]
-        } else {
-            let rest = spec
-                .strip_prefix("@/")
-                .or_else(|| spec.strip_prefix("~/"))?;
-            vec![format!("src/{}", rest), rest.to_string()]
-        };
-    for base in bases {
-        if let Some(i) = files.get(&base) {
-            return Some(*i);
-        }
-        let stripped = [".js", ".mjs", ".cjs", ".jsx"]
-            .iter()
-            .find_map(|s| base.strip_suffix(s));
-        for b in std::iter::once(base.as_str()).chain(stripped) {
-            for e in TS_EXTS {
-                if let Some(i) = files.get(&format!("{}.{}", b, e)) {
-                    return Some(*i);
-                }
+/// Find `base` (as is, with an extension, or as a directory index) in `files`.
+fn lookup_file(base: &str, files: &HashMap<String, usize>) -> Option<usize> {
+    if let Some(i) = files.get(base) {
+        return Some(*i);
+    }
+    let stripped = [".js", ".mjs", ".cjs", ".jsx"]
+        .iter()
+        .find_map(|s| base.strip_suffix(s));
+    for b in std::iter::once(base).chain(stripped) {
+        for e in TS_EXTS {
+            if let Some(i) = files.get(&format!("{}.{}", b, e)) {
+                return Some(*i);
             }
-            for e in TS_EXTS {
-                if let Some(i) = files.get(&format!("{}/index.{}", b, e)) {
-                    return Some(*i);
-                }
+        }
+        for e in TS_EXTS {
+            if let Some(i) = files.get(&format!("{}/index.{}", b, e)) {
+                return Some(*i);
             }
         }
     }
     None
+}
+
+fn is_relative_spec(spec: &str) -> bool {
+    spec.starts_with("./") || spec.starts_with("../") || spec == "." || spec == ".."
+}
+
+/// One `compilerOptions.paths` entry: `@/*` -> `["./src/*"]`.
+struct AliasRule {
+    prefix: String,
+    suffix: String,
+    wildcard: bool,
+    /// Absolute target templates (may contain one `*`).
+    targets: Vec<String>,
+}
+
+/// Import alias settings of the nearest tsconfig.json / jsconfig.json.
+struct AliasCfg {
+    rules: Vec<AliasRule>,
+    base_url: Option<String>,
+}
+
+type PathList = Vec<(String, Vec<String>)>;
+
+#[derive(Default)]
+struct RawCfg {
+    base_url: Option<PathBuf>,
+    /// Directory of the config that declared `paths`, and the entries.
+    paths: Option<(PathBuf, PathList)>,
+}
+
+/// Lexically normalize a path to an absolute, `/`-separated string.
+fn abs_norm(p: &Path) -> String {
+    // `has_root`, not `is_absolute`: values produced by this function
+    // (`/C:/x/y` on Windows) are fed back in, e.g. a tsconfig `baseUrl`
+    // joined with a `paths` target; they must not get the current dir again.
+    let abs = if p.has_root() || p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for c in abs.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::CurDir | std::path::Component::RootDir => {}
+            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    format!("/{}", parts.join("/")).replace('\\', "/")
+}
+
+/// Strip `//` and `/* */` comments and trailing commas (JSONC) outside strings.
+fn strip_jsonc(t: &str) -> String {
+    let b: Vec<char> = t.chars().collect();
+    let mut out = String::with_capacity(t.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '"' {
+            out.push(c);
+            i += 1;
+            while i < b.len() {
+                out.push(b[i]);
+                if b[i] == '\\' && i + 1 < b.len() {
+                    out.push(b[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if b[i] == '"' {
+                    break;
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if c == '/' && b.get(i + 1) == Some(&'/') {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && b.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+        } else if c == ',' {
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_whitespace() {
+                j += 1;
+            }
+            if !matches!(b.get(j), Some('}') | Some(']')) {
+                out.push(c);
+            }
+            i += 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn load_tsconfig(path: &Path, depth: u8) -> Option<RawCfg> {
+    if depth > 5 {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&strip_jsonc(&text)).ok()?;
+    let dir = path.parent()?.to_path_buf();
+    let mut cfg = RawCfg::default();
+    let exts: Vec<&str> = match v.get("extends") {
+        Some(serde_json::Value::String(s)) => vec![s.as_str()],
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).collect(),
+        _ => vec![],
+    };
+    for e in exts {
+        if !(e.starts_with('.') || e.starts_with('/')) {
+            continue; // package extends are not followed
+        }
+        let mut p = dir.join(e);
+        if !p.is_file() {
+            p = dir.join(format!("{}.json", e));
+        }
+        if let Some(parent) = load_tsconfig(&p, depth + 1) {
+            if parent.base_url.is_some() {
+                cfg.base_url = parent.base_url;
+            }
+            if parent.paths.is_some() {
+                cfg.paths = parent.paths;
+            }
+        }
+    }
+    if let Some(co) = v.get("compilerOptions") {
+        if let Some(b) = co.get("baseUrl").and_then(|b| b.as_str()) {
+            cfg.base_url = Some(PathBuf::from(abs_norm(&dir.join(b))));
+        }
+        if let Some(po) = co.get("paths").and_then(|p| p.as_object()) {
+            let list = po
+                .iter()
+                .map(|(k, t)| {
+                    let ts = t
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (k.clone(), ts)
+                })
+                .collect();
+            cfg.paths = Some((dir.clone(), list));
+        }
+    }
+    Some(cfg)
+}
+
+fn alias_cfg_in(dir: &Path) -> Option<AliasCfg> {
+    for name in ["tsconfig.json", "jsconfig.json"] {
+        if !super::dircache::has(dir, name) {
+            continue;
+        }
+        let p = dir.join(name);
+        let Some(raw) = load_tsconfig(&p, 0) else {
+            continue;
+        };
+        if raw.base_url.is_none() && raw.paths.is_none() {
+            continue;
+        }
+        let mut rules = Vec::new();
+        if let Some((pdir, list)) = &raw.paths {
+            let base = raw.base_url.clone().unwrap_or_else(|| pdir.clone());
+            for (pat, targets) in list {
+                let (prefix, suffix, wildcard) = match pat.split_once('*') {
+                    Some((a, b)) => (a.to_string(), b.to_string(), true),
+                    None => (pat.clone(), String::new(), false),
+                };
+                rules.push(AliasRule {
+                    prefix,
+                    suffix,
+                    wildcard,
+                    targets: targets.iter().map(|t| abs_norm(&base.join(t))).collect(),
+                });
+            }
+            rules.sort_by_key(|r| std::cmp::Reverse(r.prefix.len()));
+        }
+        return Some(AliasCfg {
+            rules,
+            base_url: raw.base_url.map(|b| abs_norm(&b)),
+        });
+    }
+    None
+}
+
+fn alias_cfg_for(
+    dir: &Path,
+    cache: &mut HashMap<PathBuf, Option<Rc<AliasCfg>>>,
+) -> Option<Rc<AliasCfg>> {
+    if let Some(c) = cache.get(dir) {
+        return c.clone();
+    }
+    let r = match alias_cfg_in(dir) {
+        Some(c) => Some(Rc::new(c)),
+        None => dir.parent().and_then(|p| alias_cfg_for(p, cache)),
+    };
+    cache.insert(dir.to_path_buf(), r.clone());
+    r
+}
+
+/// Import resolution over the scanned files: relative specifiers,
+/// tsconfig/jsconfig `paths` + `baseUrl` aliases (nearest config above the
+/// importing file), and the legacy `@/` -> `src/` fallback.
+struct Modules {
+    rels: Vec<String>,
+    by_rel: HashMap<String, usize>,
+    by_full: HashMap<String, usize>,
+    cfgs: Vec<Option<Rc<AliasCfg>>>,
+}
+
+impl Modules {
+    fn new(paths_rels: &[(&Path, &str)]) -> Self {
+        let mut cache = HashMap::new();
+        let mut m = Modules {
+            rels: vec![],
+            by_rel: HashMap::new(),
+            by_full: HashMap::new(),
+            cfgs: vec![],
+        };
+        for (i, (p, rel)) in paths_rels.iter().enumerate() {
+            m.rels.push(rel.to_string());
+            m.by_rel.insert(rel.to_string(), i);
+            m.by_full.insert(abs_norm(p), i);
+            // Look up configs on the real directory: `abs_norm` gives a
+            // comparison key (`/C:/x` on Windows) that the OS cannot open.
+            let cfg = p
+                .parent()
+                .map(Path::to_path_buf)
+                .and_then(|d| alias_cfg_for(&d, &mut cache));
+            m.cfgs.push(cfg);
+        }
+        m
+    }
+
+    fn alias_rule_matches(&self, fi: usize, spec: &str) -> bool {
+        self.cfgs[fi].as_ref().is_some_and(|c| {
+            c.rules.iter().any(|r| {
+                if r.wildcard {
+                    spec.len() >= r.prefix.len() + r.suffix.len()
+                        && spec.starts_with(&r.prefix)
+                        && spec.ends_with(&r.suffix)
+                } else {
+                    spec == r.prefix
+                }
+            })
+        })
+    }
+
+    /// Whether `spec` points into the project (relative or a known alias form).
+    fn is_local_spec(&self, fi: usize, spec: &str) -> bool {
+        is_relative_spec(spec)
+            || spec.starts_with("@/")
+            || spec.starts_with("~/")
+            || self.alias_rule_matches(fi, spec)
+    }
+
+    fn resolve(&self, fi: usize, spec: &str) -> Option<usize> {
+        let from_rel = &self.rels[fi];
+        if is_relative_spec(spec) {
+            let dir = from_rel.rsplit_once('/').map(|x| x.0).unwrap_or("");
+            return lookup_file(&norm_join(dir, spec), &self.by_rel);
+        }
+        if let Some(cfg) = &self.cfgs[fi] {
+            for r in &cfg.rules {
+                let mid = if r.wildcard {
+                    if spec.len() < r.prefix.len() + r.suffix.len()
+                        || !spec.starts_with(&r.prefix)
+                        || !spec.ends_with(&r.suffix)
+                    {
+                        continue;
+                    }
+                    &spec[r.prefix.len()..spec.len() - r.suffix.len()]
+                } else if spec == r.prefix {
+                    ""
+                } else {
+                    continue;
+                };
+                for t in &r.targets {
+                    if let Some(i) = lookup_file(&t.replacen('*', mid, 1), &self.by_full) {
+                        return Some(i);
+                    }
+                }
+            }
+            if let Some(b) = &cfg.base_url {
+                if let Some(i) = lookup_file(&format!("{}/{}", b, spec), &self.by_full) {
+                    return Some(i);
+                }
+            }
+        }
+        let rest = spec
+            .strip_prefix("@/")
+            .or_else(|| spec.strip_prefix("~/"))?;
+        lookup_file(&format!("src/{}", rest), &self.by_rel)
+            .or_else(|| lookup_file(rest, &self.by_rel))
+    }
 }
 
 // ------------------------------------------------------------ app graph
@@ -314,6 +608,8 @@ enum ChildRef {
     Require(String, Option<String>),
     /// `ns.router` where `ns` is a namespace import.
     NsMember(String, String),
+    /// Call of a factory function: the instances it returns.
+    Factory(String),
 }
 
 struct Mount {
@@ -352,6 +648,8 @@ struct FileGraph {
     imports: HashMap<String, (String, String)>,
     default_export: Option<String>,
     named: HashMap<String, String>,
+    /// Factory function (local name) -> keys of the instances it returns.
+    fn_ret: HashMap<String, Vec<String>>,
 }
 
 type Node2 = (usize, String);
@@ -841,7 +1139,7 @@ const CHAIN_METHODS: [&str; 24] = [
 /// re-exports), string consts and factory functions.
 struct Resolver<'a> {
     decls: &'a [FileDecl],
-    by_rel: &'a HashMap<String, usize>,
+    mods: &'a Modules,
     factories: HashSet<(usize, String)>,
     /// Hono only: template substitutions, imported consts, factories, route defs.
     ext: bool,
@@ -850,7 +1148,7 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     fn module(&self, fi: usize, spec: &str) -> Option<usize> {
-        resolve_module(&self.decls[fi].rel, spec, self.by_rel)
+        self.mods.resolve(fi, spec)
     }
 
     /// Follow `name` exported by file `fi` (through re-exports) to the file
@@ -1048,7 +1346,17 @@ impl<'a> Resolver<'a> {
                             }
                             n = unwrap(o);
                         }
-                        "identifier" => return self.is_factory_callee(fi, txt(f, src)),
+                        "identifier" => {
+                            if self.is_factory_callee(fi, txt(f, src)) {
+                                return true;
+                            }
+                            // `wrap(new Hono())`: look through wrapper calls.
+                            let first = n
+                                .child_by_field_name("arguments")
+                                .and_then(|a| a.named_child(0));
+                            return first
+                                .is_some_and(|a| self.is_hono_expr(a, fi, src, locals, depth + 1));
+                        }
                         _ => return false,
                     }
                 }
@@ -1117,6 +1425,8 @@ struct Builder<'a> {
     loop_vars: HashMap<String, Vec<String>>,
     /// createRoute() definitions consumed by `.openapi()`: (file, key).
     used: HashSet<(usize, usize)>,
+    /// Factory calls already linked to the instances the factory returns.
+    linked: HashSet<usize>,
     /// Lines of `.openapi()` calls whose route reference was not resolvable.
     unresolved: Vec<u32>,
     warnings: Vec<String>,
@@ -1200,6 +1510,14 @@ impl<'a> Builder<'a> {
                 if f.kind() == "member_expression" {
                     n = f.child_by_field_name("object")?;
                     continue;
+                }
+                // `wrap(new Hono())`: look through a wrapper call.
+                if self.flavor == Flavor::Hono && f.kind() == "identifier" {
+                    if let Some(inner) = self.args(n).first().and_then(|a| self.chain_base(*a)) {
+                        if self.is_creation(inner) {
+                            return Some(inner);
+                        }
+                    }
                 }
             }
             return Some(n);
@@ -1532,6 +1850,63 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Record, for every factory function declared in this file, the
+    /// instances its `return` expressions evaluate to.
+    fn collect_fn_returns(&mut self, root: Node<'a>) {
+        let mut funcs = Vec::new();
+        let mut c = root.walk();
+        for top in root.named_children(&mut c) {
+            top_funcs(top, self.src, &mut funcs);
+        }
+        for (name, f) in funcs {
+            if !self.res.factories.contains(&(self.fi, name.clone())) {
+                continue;
+            }
+            let Some(body) = f.child_by_field_name("body") else {
+                continue;
+            };
+            let mut returns = Vec::new();
+            let mut locals = HashMap::new();
+            if body.kind() == "statement_block" {
+                walk_fn_body(body, self.src, &mut returns, &mut locals);
+            } else {
+                returns.push(body);
+            }
+            let mut keys: Vec<String> = Vec::new();
+            for r in returns {
+                if let Some(k) = self.expr_instance_name(r) {
+                    let own = k.starts_with('@') || locals.contains_key(&k);
+                    if own && self.g.insts.contains_key(&k) && !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+            if !keys.is_empty() {
+                self.g.fn_ret.insert(name, keys);
+            }
+        }
+    }
+
+    /// `createX()` of a known factory: the call site becomes an instance that
+    /// stands for whatever the factory returns (mounted with an empty prefix).
+    fn link_factory_call(&mut self, n: Node<'a>) {
+        let Some(f) = n.child_by_field_name("function").map(unwrap) else {
+            return;
+        };
+        if f.kind() != "identifier" {
+            return;
+        }
+        let key = self.creation_key(n);
+        if self.linked.insert(n.start_byte()) {
+            self.g.mounts.push(Mount {
+                parent: key,
+                prefix: String::new(),
+                child: ChildRef::Factory(self.t(f).to_string()),
+                line: line_of(n),
+            });
+        }
+    }
+
     // --------------------------------------------------- pass 2: calls
 
     fn resolve_receiver(&mut self, n: Node<'a>) -> Option<Recv> {
@@ -1609,6 +1984,11 @@ impl<'a> Builder<'a> {
         let mut bound: Option<String> = None;
         match n.kind() {
             "call_expression" => {
+                if self.flavor == Flavor::Hono
+                    && self.fcalls.contains(&(n.start_byte(), n.end_byte()))
+                {
+                    self.link_factory_call(n);
+                }
                 self.call(n);
                 bound = self.bind_for_each(n);
             }
@@ -2090,11 +2470,11 @@ pub fn scan_graphs(
         });
     }
     let n = entries.len();
-    let by_rel: HashMap<String, usize> = entries
+    let mod_inputs: Vec<(&Path, &str)> = entries
         .iter()
-        .enumerate()
-        .map(|(i, e)| (e.rel.clone(), i))
+        .map(|e| (e.path.as_path(), e.rel.as_str()))
         .collect();
+    let mods = Modules::new(&mod_inputs);
     let mut decls: Vec<FileDecl> = entries
         .iter()
         .map(|e| FileDecl {
@@ -2144,7 +2524,7 @@ pub fn scan_graphs(
         loop {
             let res = Resolver {
                 decls: &decls,
-                by_rel: &by_rel,
+                mods: &mods,
                 factories: std::mem::take(&mut factories),
                 ext: true,
                 hono_types: vec![],
@@ -2199,7 +2579,7 @@ pub fn scan_graphs(
         .collect();
     let res = Resolver {
         decls: &decls,
-        by_rel: &by_rel,
+        mods: &mods,
         factories,
         ext: hono,
         hono_types,
@@ -2234,10 +2614,14 @@ pub fn scan_graphs(
             arrays: HashMap::new(),
             loop_vars: HashMap::new(),
             used: HashSet::new(),
+            linked: HashSet::new(),
             unresolved: vec![],
             warnings: vec![],
         };
         b.collect(tree.root_node());
+        if hono {
+            b.collect_fn_returns(tree.root_node());
+        }
         b.visit(tree.root_node());
         if let Some(first) = b.unresolved.first().copied() {
             let cnt = b.unresolved.len();
@@ -2256,7 +2640,7 @@ pub fn scan_graphs(
     }
 
     let resolve_import = |gi: usize, spec: &str, imp: &str| -> Option<(usize, String)> {
-        let fi = resolve_module(&graphs[gi].rel, spec, &by_rel)?;
+        let fi = mods.resolve(gi, spec)?;
         let mut cur = (fi, imp.to_string());
         for _ in 0..7 {
             let g = &graphs[cur.0];
@@ -2292,23 +2676,70 @@ pub fn scan_graphs(
 
     let mut children: HashMap<Node2, Vec<(String, Node2)>> = HashMap::new();
     let mut mounted: HashSet<Node2> = HashSet::new();
+    // Instances a factory function returns: reachable only through its call sites.
+    let mut factory_internal: HashSet<Node2> = HashSet::new();
+    for (gi, g) in graphs.iter().enumerate() {
+        for keys in g.fn_ret.values() {
+            for k in keys {
+                factory_internal.insert((gi, k.clone()));
+            }
+        }
+    }
+    // (file, name, spec) -> (cause, lines) of mounts that did not resolve.
+    let mut unresolved_mounts: IndexMap<(usize, String, String), (String, Vec<u32>)> =
+        IndexMap::new();
     for (gi, g) in graphs.iter().enumerate() {
         for m in &g.mounts {
+            if let ChildRef::Factory(callee) = &m.child {
+                let target_fn = if g.fn_ret.contains_key(callee) {
+                    Some((gi, callee.clone()))
+                } else {
+                    g.imports
+                        .get(callee)
+                        .and_then(|(spec, imp)| res.resolve_import(gi, spec, imp))
+                };
+                let keys = target_fn
+                    .and_then(|(fj, local)| graphs[fj].fn_ret.get(&local).map(|k| (fj, k.clone())));
+                if let Some((fj, keys)) = keys {
+                    for k in keys {
+                        let t = (fj, k);
+                        if t.0 == gi && t.1 == m.parent {
+                            continue;
+                        }
+                        mounted.insert(t.clone());
+                        children
+                            .entry((gi, m.parent.clone()))
+                            .or_default()
+                            .push((String::new(), t));
+                    }
+                }
+                continue;
+            }
             let target = match &m.child {
+                ChildRef::Factory(_) => None,
                 ChildRef::Key(k) => Some((gi, k.clone())),
                 ChildRef::Name(n) => {
                     if g.insts.contains_key(n) {
                         Some((gi, n.clone()))
                     } else if let Some((spec, imp)) = g.imports.get(n) {
                         let r = resolve_import(gi, spec, imp);
-                        if r.is_none()
-                            && hono
-                            && (spec.starts_with("./") || spec.starts_with("../"))
-                        {
-                            warnings.push(format!(
-                                "{}:{}: could not resolve mounted app `{}` ({})",
-                                g.rel, m.line, n, spec
-                            ));
+                        if r.is_none() && hono && mods.is_local_spec(gi, spec) {
+                            let cause = match mods.resolve(gi, spec) {
+                                None => format!(
+                                    "the import `{}` does not resolve to a scanned file (unresolved import alias? check tsconfig `paths`/`baseUrl`)",
+                                    spec
+                                ),
+                                Some(fj) => format!(
+                                    "`{}` exported from {} is not a recognised Hono instance (is it created by an unrecognised factory function?)",
+                                    imp, graphs[fj].rel
+                                ),
+                            };
+                            let e = unresolved_mounts
+                                .entry((gi, n.clone(), spec.clone()))
+                                .or_insert((cause, vec![]));
+                            if !e.1.contains(&m.line) {
+                                e.1.push(m.line);
+                            }
                         }
                         r
                     } else {
@@ -2334,6 +2765,18 @@ pub fn scan_graphs(
                     .push((m.prefix.clone(), t));
             }
         }
+    }
+
+    for ((gi, name, spec), (cause, lines)) in &unresolved_mounts {
+        let mut msg = format!(
+            "{}:{}: could not resolve mounted app `{}` ({}): {}",
+            graphs[*gi].rel, lines[0], name, spec, cause
+        );
+        if lines.len() > 1 {
+            let more: Vec<String> = lines[1..].iter().map(|l| l.to_string()).collect();
+            msg.push_str(&format!(" (also mounted at line {})", more.join(", ")));
+        }
+        warnings.push(msg);
     }
 
     let mut out = Vec::new();
@@ -2390,6 +2833,17 @@ pub fn scan_graphs(
         for key in g.insts.keys() {
             let node = (gi, key.clone());
             if !mounted.contains(&node) {
+                if factory_internal.contains(&node) {
+                    let n = g.regs.iter().filter(|r| r.inst == node.1).count();
+                    if n > 0 {
+                        let first = g.regs.iter().find(|r| r.inst == node.1).unwrap().line;
+                        warnings.push(format!(
+                            "{}:{}: {} route(s) registered on an app created inside a factory function that is never called were not emitted",
+                            g.rel, first, n
+                        ));
+                    }
+                    continue;
+                }
                 dfs(
                     &graphs,
                     &children,
@@ -2408,6 +2862,7 @@ pub fn scan_graphs(
     // are still emitted, with the path as written.
     if hono {
         let mut emitted = 0usize;
+        let mut seen: IndexMap<(String, String), Vec<String>> = IndexMap::new();
         for (fi, d) in decls.iter().enumerate() {
             for def in &d.all_defs {
                 if used.contains(&(fi, def.key)) {
@@ -2420,6 +2875,9 @@ pub fn scan_graphs(
                         if unnamed {
                             warnings.push(unnamed_param_warning(&d.rel, def.line, &p));
                         }
+                        seen.entry((m.clone(), path.clone()))
+                            .or_default()
+                            .push(format!("{}:{}", d.rel, def.line));
                         out.push(Route {
                             method: m,
                             path,
@@ -2439,11 +2897,30 @@ pub fn scan_graphs(
             }
         }
         if emitted > 0 {
-            warnings.push(format!(
+            let no_app = graphs.iter().all(|g| g.insts.is_empty());
+            let mut msg = format!(
                 "{} createRoute() definition(s) are not connected to any app through `.openapi()`; emitted with the path as written (no mount prefixes)",
                 emitted
+            );
+            if no_app {
+                msg.push_str(
+                    ". No Hono app instance (`new Hono()` / `new OpenAPIHono()`) was found at all: the app is probably created by a factory function that was not recognised (a function that returns `new Hono()` / `new OpenAPIHono()`, directly or inside a wrapper call), or imported through an alias that does not resolve (check tsconfig `paths`)",
+                );
+            }
+            warnings.push(msg);
+        }
+        for ((m, p), locs) in seen.iter().filter(|(_, l)| l.len() > 1) {
+            let shown: Vec<&str> = locs.iter().take(6).map(|s| s.as_str()).collect();
+            warnings.push(format!(
+                "{} createRoute() definitions share `{} {}` ({}{}); they are reported as one endpoint",
+                locs.len(),
+                m,
+                p,
+                shown.join(", "),
+                if locs.len() > 6 { ", ..." } else { "" }
             ));
         }
     }
+    dedup(&mut warnings);
     Ok((out, warnings))
 }
