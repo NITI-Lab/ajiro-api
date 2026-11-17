@@ -284,6 +284,19 @@ fn run_framework(
     })
 }
 
+/// Whether `f` has an extension the `framework` scanner parses.
+fn is_source_file(f: &Path, framework: &str) -> bool {
+    let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match framework {
+        "fastapi" => ext == "py",
+        "go-nethttp" | "go-chi" | "go-echo" => ext == "go",
+        _ => matches!(
+            ext,
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts"
+        ),
+    }
+}
+
 pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport> {
     let started = Instant::now();
     let framework = match opts
@@ -294,8 +307,9 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     {
         Some(f) => f,
         None => bail!(
-            "could not detect the framework. Pass --framework <{}> or set `framework` in ajiro-api.yaml",
-            FRAMEWORKS.join("|")
+            "could not detect the framework. Pass --framework <{}> or set `framework` in ajiro-api.yaml. {}",
+            FRAMEWORKS.join("|"),
+            crate::init::no_framework_message(&crate::init::detect(&project.root))
         ),
     };
     if !FRAMEWORKS.contains(&framework.as_str()) {
@@ -311,11 +325,26 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     routes.sort_by(|a, b| (&a.path, &a.method).cmp(&(&b.path, &b.method)));
     routes.dedup_by(|b, a| a.path == b.path && a.method == b.method);
     if routes.is_empty() {
+        let parsed = files
+            .iter()
+            .filter(|f| is_source_file(f, &framework))
+            .count();
         let mut msg = format!(
-            "no {} routes found in {} scanned files",
+            "no {} routes found in {} scanned source file(s) ({} files in total, others are not code). \
+             The project may use a framework ajiro-api does not support (supported: {}); \
+             check `sources`/`exclude` in ajiro-api.yaml and --framework",
             framework,
-            files.len()
+            parsed,
+            files.len(),
+            FRAMEWORKS.join(", ")
         );
+        let unsupported = crate::init::detect(&project.root).unsupported;
+        if !unsupported.is_empty() {
+            msg.push_str(&format!(
+                ". This project looks like {}, which is not supported",
+                unsupported.join(" / ")
+            ));
+        }
         if framework == "hono" && uses_hono_openapi(&project.root, &files) {
             msg.push_str(
                 ". This project uses @hono/zod-openapi: if the app serves an OpenAPI document, \
@@ -522,7 +551,15 @@ pub fn run_cli(dir: &Path, args: &ScanArgs) -> Result<i32> {
             );
         }
     }
-    Ok(if args.check && drift {
+    // `--check` must not pass vacuously: nothing found and nothing on disk
+    // means the scan saw no project at all (wrong framework or sources).
+    let vacuous = args.check && report.endpoints.is_empty() && report.stale.is_empty();
+    if vacuous && !args.json {
+        eprintln!(
+            "scan --check found no routes and there are no endpoint files: nothing was checked"
+        );
+    }
+    Ok(if (args.check && drift) || vacuous {
         crate::exit::FAILURE
     } else {
         crate::exit::OK

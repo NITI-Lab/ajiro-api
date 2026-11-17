@@ -238,8 +238,9 @@ struct Built {
 fn smoke_warning(status: u16, env: &str, file: &str) -> Option<String> {
     match status {
         401 | 403 | 407 => Some(format!(
-            "smoke check passed with status {status}: the request was not authenticated or not allowed, so it proves little; \
-             log in through `environments.{env}.setup` and send the token or cookie with `headers`, or add tests to {file}"
+            "smoke check passed with status {status}: the request was not authenticated, not allowed, or rejected by a middleware \
+             (CSRF/origin guard, ...), so it proves little; if the API needs a login, log in through `environments.{env}.setup` \
+             and send the token or cookie with `headers`; otherwise add tests to {file} with the headers the guard expects"
         )),
         400..=499 => Some(format!(
             "smoke check passed with status {status}: the endpoint probably needs parameters, a body or an existing resource; \
@@ -1023,6 +1024,23 @@ fn truncate_log(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smoke_warning_401_403_mentions_middleware_and_setup() {
+        for status in [401u16, 403, 407] {
+            let w = smoke_warning(status, "local", "api/x.yaml").unwrap();
+            assert!(
+                w.contains("not authenticated, not allowed, or rejected by a middleware"),
+                "{w}"
+            );
+            assert!(w.contains("CSRF/origin guard"), "{w}");
+            assert!(w.contains("environments.local.setup"), "{w}");
+        }
+        assert!(smoke_warning(404, "local", "f")
+            .unwrap()
+            .contains("parameters"));
+        assert!(smoke_warning(200, "local", "f").is_none());
+    }
+
     use super::*;
 
     #[test]

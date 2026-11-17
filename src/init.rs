@@ -45,57 +45,230 @@ fn node_deps(root: &Path) -> Option<HashSet<String>> {
     Some(deps)
 }
 
-/// Detect the framework used in `root` (package.json deps, pyproject/requirements, go.mod).
-pub fn detect_framework(root: &Path) -> Option<String> {
-    if let Some(deps) = node_deps(root) {
+/// Outcome of framework detection: the supported framework (if any) plus
+/// notes that explain a missing or rejected detection.
+#[derive(Debug, Clone, Default)]
+pub struct Detection {
+    pub framework: Option<String>,
+    /// Recognisable stacks ajiro-api cannot scan (`NestJS`, `Flask`, ...).
+    pub unsupported: Vec<String>,
+    /// Why a dependency was not taken as the framework.
+    pub notes: Vec<String>,
+}
+
+/// Whether a source file under `root` creates a Hono app (`new Hono(`).
+fn has_hono_app(root: &Path) -> bool {
+    let skip = ["node_modules", "dist", "build", ".git", ".next", ".output"];
+    walkdir::WalkDir::new(root)
+        .max_depth(5)
+        .into_iter()
+        .filter_entry(|e| !skip.iter().any(|s| e.file_name() == *s))
+        .filter_map(|e| e.ok())
+        .take(5000)
+        .filter(|e| {
+            e.file_type().is_file()
+                && matches!(
+                    e.path().extension().and_then(|x| x.to_str()),
+                    Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "mts")
+                )
+                && e.metadata().map(|m| m.len() < 512 * 1024).unwrap_or(false)
+        })
+        .any(|e| {
+            std::fs::read_to_string(e.path())
+                .map(|t| t.contains("new Hono(") || t.contains("new OpenAPIHono("))
+                .unwrap_or(false)
+        })
+}
+
+fn has_wrangler(root: &Path) -> bool {
+    ["wrangler.toml", "wrangler.json", "wrangler.jsonc"]
+        .iter()
+        .any(|f| root.join(f).is_file())
+}
+
+/// A package that depends on `hono` but is a browser app (Vite, React, ...)
+/// with no server entry: Hono is only used as a typed client (`hono/client`).
+fn hono_is_client_only(root: &Path, deps: &HashSet<String>) -> bool {
+    let frontend = ["vite", "react", "react-dom", "vue", "svelte", "solid-js"]
+        .iter()
+        .any(|d| deps.contains(*d))
+        || deps
+            .iter()
+            .any(|d| d.starts_with("@tanstack/") && d.contains("router"));
+    if !frontend {
+        return false;
+    }
+    let server_dep = deps.contains("@hono/node-server")
+        || deps.contains("@hono/vite-dev-server")
+        || deps.contains("@hono/zod-openapi")
+        || deps.contains("@cloudflare/workers-types") && has_wrangler(root);
+    !(server_dep || has_wrangler(root) || has_hono_app(root))
+}
+
+fn python_text(root: &Path) -> String {
+    let mut py = String::new();
+    for f in ["pyproject.toml", "Pipfile"] {
+        py.extend(read(root, f));
+        py.push('\n');
+    }
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for e in rd.filter_map(|e| e.ok()) {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with("requirements") && n.ends_with(".txt") {
+                py.extend(std::fs::read_to_string(e.path()).ok());
+                py.push('\n');
+            }
+        }
+    }
+    py.to_ascii_lowercase()
+}
+
+/// Whether `name` appears as a Python dependency in `text` (lower-cased).
+fn py_has(text: &str, name: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.trim().trim_matches(|c| c == '"' || c == '\'' || c == ',');
+        l.strip_prefix(name).is_some_and(|rest| {
+            !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                && !rest.starts_with('-')
+        })
+    }) || text.contains(&format!("\"{}", name))
+        || text.contains(&format!("'{}", name))
+}
+
+/// Recognisable stacks that ajiro-api does not support.
+fn unsupported_stacks(root: &Path, deps: Option<&HashSet<String>>) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    if let Some(deps) = deps {
+        let has = |d: &str| deps.contains(d);
+        if has("@nestjs/core") {
+            v.push("NestJS (@nestjs/core)".into());
+        }
+        if has("fastify") {
+            v.push("Fastify".into());
+        }
+        if has("koa") {
+            v.push("Koa".into());
+        }
+        if has("@aws-amplify/backend") {
+            v.push("AWS Amplify Gen2 (@aws-amplify/backend)".into());
+        }
+        if has("@types/google-apps-script") || has("@google/clasp") {
+            v.push("Google Apps Script".into());
+        }
+    }
+    if root.join("appsscript.json").is_file() || root.join(".clasp.json").is_file() {
+        let n = "Google Apps Script";
+        if !v.iter().any(|x| x == n) {
+            v.push(n.into());
+        }
+    }
+    let hono = deps.is_some_and(|d| d.contains("hono"));
+    let pages_dep =
+        deps.is_some_and(|d| d.contains("wrangler") || d.contains("@cloudflare/next-on-pages"));
+    if root.join("functions").is_dir() && (has_wrangler(root) || pages_dep) && !hono {
+        v.push("Cloudflare Pages Functions (functions/ directory)".into());
+    }
+    let py = python_text(root);
+    if py_has(&py, "flask") {
+        v.push("Flask".into());
+    }
+    if py_has(&py, "django") {
+        v.push("Django".into());
+    }
+    v
+}
+
+/// Detect the framework used in `root` and explain what was seen.
+pub fn detect(root: &Path) -> Detection {
+    let mut d = Detection::default();
+    let deps = node_deps(root);
+    d.unsupported = unsupported_stacks(root, deps.as_ref());
+    if let Some(deps) = &deps {
         let next = deps.contains("next");
         let hono = deps.contains("hono") || deps.iter().any(|d| d.starts_with("@hono/"));
-        let express = deps.contains("express");
+        // NestJS runs on Express/Fastify but its routes are decorators.
+        let nest = deps.contains("@nestjs/core");
+        let express = deps.contains("express") && !nest;
         let next_routes = ["app", "src/app"]
             .iter()
             .any(|d| has_route_handlers(&root.join(d)))
             || root.join("pages/api").is_dir()
             || root.join("src/pages/api").is_dir();
         if next && next_routes {
-            return Some("nextjs".into());
+            d.framework = Some("nextjs".into());
+            return d;
         }
         if hono {
-            return Some("hono".into());
-        }
-        if express {
-            return Some("express".into());
-        }
-        if next {
-            return Some("nextjs".into());
-        }
-    }
-    let mut py = vec![];
-    py.extend(read(root, "pyproject.toml"));
-    py.extend(read(root, "Pipfile"));
-    if let Ok(rd) = std::fs::read_dir(root) {
-        for e in rd.filter_map(|e| e.ok()) {
-            let n = e.file_name().to_string_lossy().to_string();
-            if n.starts_with("requirements") && n.ends_with(".txt") {
-                py.extend(std::fs::read_to_string(e.path()).ok());
+            if hono_is_client_only(root, deps) {
+                d.notes.push(
+                    "`hono` is a dependency, but this looks like a browser app (Vite/React/...) \
+                     with no Hono server (no wrangler config, @hono/node-server or `new Hono()`): \
+                     Hono is probably only used as a client (`hono/client`), so it was not picked"
+                        .into(),
+                );
+            } else {
+                d.framework = Some("hono".into());
+                return d;
             }
         }
+        if express {
+            d.framework = Some("express".into());
+            return d;
+        }
+        if next && !nest {
+            d.framework = Some("nextjs".into());
+            return d;
+        }
     }
-    if py
-        .iter()
-        .any(|t| t.to_ascii_lowercase().contains("fastapi"))
-    {
-        return Some("fastapi".into());
+    let py = python_text(root);
+    if py.contains("fastapi") {
+        d.framework = Some("fastapi".into());
+        return d;
     }
     if let Some(gomod) = read(root, "go.mod") {
-        if gomod.contains("github.com/go-chi/chi") {
-            return Some("go-chi".into());
-        }
-        if gomod.contains("github.com/labstack/echo") {
-            return Some("go-echo".into());
-        }
-        return Some("go-nethttp".into());
+        d.framework = Some(
+            if gomod.contains("github.com/go-chi/chi") {
+                "go-chi"
+            } else if gomod.contains("github.com/labstack/echo") {
+                "go-echo"
+            } else {
+                "go-nethttp"
+            }
+            .into(),
+        );
     }
-    None
+    d
+}
+
+/// Detect the framework used in `root` (package.json deps, pyproject/requirements, go.mod).
+pub fn detect_framework(root: &Path) -> Option<String> {
+    detect(root).framework
+}
+
+/// Human-readable explanation for "no supported framework detected", naming
+/// known unsupported stacks. Shared by `init` and `scan`.
+pub fn no_framework_message(d: &Detection) -> String {
+    let mut m = format!(
+        "no supported framework detected (supported: {}).",
+        FRAMEWORKS.join(", ")
+    );
+    if !d.unsupported.is_empty() {
+        m.push_str(&format!(
+            " This project looks like {}, which ajiro-api cannot scan yet.",
+            d.unsupported.join(" / ")
+        ));
+    }
+    for n in &d.notes {
+        m.push(' ');
+        m.push_str(n);
+        m.push('.');
+    }
+    m.push_str(&format!(
+        " If it uses one of the supported frameworks, set `framework` in {} (or pass --framework <name>); \
+         otherwise write the endpoint files by hand or import them with `ajiro-api openapi import`.",
+        CONFIG_FILE
+    ));
+    m
 }
 
 fn default_base_url(root: &Path, framework: Option<&str>) -> String {
@@ -330,7 +503,19 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
             );
         }
     }
-    let framework = args.framework.clone().or_else(|| detect_framework(root));
+    let detection = if args.framework.is_some() {
+        Detection::default()
+    } else {
+        detect(root)
+    };
+    let framework = args
+        .framework
+        .clone()
+        .or_else(|| detection.framework.clone());
+    let mut warnings: Vec<String> = Vec::new();
+    if framework.is_none() {
+        warnings.push(no_framework_message(&detection));
+    }
     let base_url = args
         .base_url
         .clone()
@@ -387,6 +572,7 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
             "created": created,
             "updated": updated,
             "framework": framework,
+            "warnings": warnings,
             "config": serde_json::to_value(serde_yaml_rust2::from_str::<ProjectConfig>(&text)?)?,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -399,8 +585,8 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
     for u in &updated {
         println!("updated {} (added .env)", u);
     }
-    match &framework {
-        Some(f) => {
+    if let Some(f) = &framework {
+        {
             let origin = match (&args.base_url, detect_port(root)) {
                 (Some(_), _) => "from --base-url".to_string(),
                 (None, Some((_, file))) => format!("port detected in {}", file),
@@ -408,10 +594,9 @@ pub fn run_cli(dir: &Path, args: &InitArgs) -> Result<i32> {
             };
             println!("framework: {} (base_url {}, {})", f, base_url, origin)
         }
-        None => println!(
-            "warning: could not detect the framework. Set `framework` in {} or run `ajiro-api scan --framework <name>`.",
-            CONFIG_FILE
-        ),
+    }
+    for w in &warnings {
+        println!("warning: {}", w);
     }
     println!();
     println!("Next steps:");

@@ -22,6 +22,14 @@ ajiro-api [OPTIONS] <COMMAND>
 
 `--json` を持つコマンドは、エージェントが読める安定した出力を返します。出力中のトークンやパスワードは `***` で伏せられます。
 
+`--json` 付きで終了コード `2`（ツール自体が実行できなかった）になるときは、stderr のテキスト（`error: ...`）に加えて、stdout に次のJSONオブジェクトを出力します（`init` `scan` `test` `list` `validate` `openapi import` `import postman|bruno`）。
+
+```json
+{ "report_version": 1, "ok": false, "error": "invalid /path/ajiro-api.yaml: missing field `version`" }
+```
+
+`ajiro-api.yaml` が存在するのに不正（`version: 1` がない、未知のキーなど）な場合、すべてのコマンドが設定を暗黙の既定値で置き換えず、その理由を示して終了コード `2` で終了します。既定値にフォールバックするのは `ajiro-api.yaml` が見つからないときだけです。
+
 ## init
 
 `ajiro-api.yaml` と `api/` ディレクトリを作ります。フレームワークは自動判定します。
@@ -31,7 +39,9 @@ ajiro-api [OPTIONS] <COMMAND>
 | `--framework <名前>` | `nextjs` `hono` `fastapi` `express` `go-nethttp` `go-chi` `go-echo`（省略時は自動判定） |
 | `--force` | 既存の `ajiro-api.yaml` を上書き |
 | `--base-url <URL>` | `local` 環境のベースURL。省略時はポートを自動検出します（`.env.example` の `PORT=`、`package.json` の `-p`/`--port`、コード中の `serve({ port })`・`process.env.PORT ?? 8000`・`.listen(8000)`・`ListenAndServe(":8080")` など）。見つからなければフレームワークの既定値です |
-| `--json` | 機械向け出力 |
+| `--json` | 機械向け出力（`created` `updated` `framework` `warnings` `config`） |
+
+対応フレームワークが見つからないとき（`--framework` 省略時）も `ajiro-api.yaml` は作られ終了コードは `0` ですが、`framework` は `null`、`warnings` に対応フレームワーク一覧と設定方法を入れ、人間向け出力にも `warning:` を表示します。Flask / Django / NestJS / Fastify / Koa / AWS Amplify Gen2 / Cloudflare Pages Functions / Google Apps Script のように判別できる未対応スタックは名前を明示します（NestJS は内部でExpressを使っていても Express とは判定しません）。`hono` が依存にあっても、Vite/React 等のブラウザアプリで Honoサーバー（wrangler設定、`@hono/node-server`、`new Hono()`）が無ければ、`hono/client` だけを使うクライアントとみなして `hono` とは判定しません。
 
 ## scan
 
@@ -46,7 +56,7 @@ ajiro-api scan [OPTIONS] [PATHS]...
 | `[PATHS]...` | 解析するディレクトリまたはファイル（既定: `ajiro-api.yaml` の `sources`） |
 | `--framework <名前>` | フレームワーク（既定: 設定ファイルまたは自動判定） |
 | `--dry-run` | ファイルを書かずに変更内容を表示 |
-| `--check` | YAMLが古ければ終了コード1（CI向け）。何も書き込まない |
+| `--check` | YAMLが古ければ終了コード1（CI向け）。何も書き込まない。ルートが0件で既存のエンドポイントファイルも0件（何も検査していない）のときも終了コード1 |
 | `--ignore-lines` | `--check` と併用。`source.line` だけが変わったファイル（同じファイル内でルートの行がずれただけ）は差分に数えない。新しいルートやファイル・ハンドラーの変更は従来どおり差分 |
 | `--json` | 機械向け出力 |
 
@@ -55,6 +65,8 @@ ajiro-api scan [OPTIONS] [PATHS]...
 Hono はミドルウェアとハンドラーを構文だけでは区別できないため、次のルールで判定します。`.on` / `.get` / `.post` ... / `.all` の登録で、ハンドラー引数がすべて呼び出し式（`adminChecker("X")`、`zValidator(...)` など。識別子・アロー関数・関数式のハンドラーを含まない）であり、かつそのパスのすべてが同じルーターインスタンス（同一ファイル内）の別の登録（上記に当てはまらないもの。メソッドは問わず、正規化したパスで比較し、パラメータ名は無視）でも登録されている場合、その登録はミドルウェアとみなしてルートを出力しません。`app.get("/reference", apiReference({...}))` のように他に同じパスの登録がなければルートのままです。`app.use(...)` はルートを出力しません。Express にも同じルールを適用します。
 
 パスのパラメータ名を復元できない場合（`/banners/:`、`/x/:{[0-9]+}` など）は `{}` ではなく `{param}` とし、元のパス文字列を含む警告を出します。
+
+ルートが0件のときは `warnings` に「no <fw> routes found in N scanned source file(s)」を出します。N は実際に解析したコードファイルだけの数（画像などは含みません）で、未対応フレームワークの可能性、対応一覧、判別できる未対応スタック名を添えます。終了コードは既定で `0` です。
 
 `--json` の主な項目: `framework`、`endpoints[]`（`id` `method` `path` `file` `source` `status`＝`created`/`updated`/`unchanged`、`source.line` だけが変わったときは `line_only: true`）、`created`、`updated`、`unchanged`、`line_only`（`updated` のうち行番号だけが変わった件数）、`stale`、`warnings`、`duration_ms`。
 
