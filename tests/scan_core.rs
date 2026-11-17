@@ -882,13 +882,14 @@ fn source_file_is_a_clean_path_for_sources_outside_the_project() {
     assert_eq!(r.endpoints.len(), 3);
     for e in &r.endpoints {
         assert!(
-            !e.source.file.contains("//") && e.source.file.starts_with('/'),
+            !e.source.file.contains("//") && Path::new(&e.source.file).is_absolute(),
             "{}",
             e.source.file
         );
         assert!(!e.source.file.contains('\\'));
     }
-    // go-chi used to produce `//mnt/...`
+    // go-chi used to produce `//mnt/...`. Absolute is `/...` on Unix and
+    // `C:/...` (forward slashes) on Windows.
     let chi =
         std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/go-chi"))
             .unwrap()
@@ -900,7 +901,7 @@ fn source_file_is_a_clean_path_for_sources_outside_the_project() {
     assert!(
         r.endpoints
             .iter()
-            .all(|e| !e.source.file.contains("//") && e.source.file.starts_with('/')),
+            .all(|e| !e.source.file.contains("//") && Path::new(&e.source.file).is_absolute()),
         "{:?}",
         r.endpoints
             .iter()
