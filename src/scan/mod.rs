@@ -367,7 +367,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
         );
         by_key.entry(key).or_insert(i);
     }
-    let mut taken_ids: HashSet<String> = existing.iter().map(|e| e.def.id.clone()).collect();
+    let taken_ids: HashSet<String> = existing.iter().map(|e| e.def.id.clone()).collect();
     let mut taken_paths: HashSet<PathBuf> = existing.iter().map(|e| e.path.clone()).collect();
     let api_dir = project.api_dir();
 
@@ -377,7 +377,56 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
     let mut line_only_count = 0;
     let write = !(opts.dry_run || opts.check);
 
-    for route in &routes {
+    // Ids for new files are assigned for the whole batch at once so that they
+    // do not depend on scan order (see `naming::assign_ids`).
+    let new_idx: Vec<usize> = (0..routes.len())
+        .filter(|&i| !by_key.contains_key(&(routes[i].method.clone(), routes[i].path.clone())))
+        .collect();
+    let new_pairs: Vec<(String, String)> = new_idx
+        .iter()
+        .map(|&i| (routes[i].method.clone(), routes[i].path.clone()))
+        .collect();
+    let new_ids: HashMap<usize, String> = new_idx
+        .iter()
+        .copied()
+        .zip(naming::assign_ids(&new_pairs, &taken_ids))
+        .collect();
+    let new_rels: HashMap<usize, PathBuf> = new_idx
+        .iter()
+        .map(|&i| {
+            (
+                i,
+                naming::endpoint_rel_path(&routes[i].method, &routes[i].path),
+            )
+        })
+        .collect();
+
+    // File-name collisions get `-2`, `-3` in (path, method) order, not scan order.
+    let mut file_order = new_idx.clone();
+    file_order.sort_by(|&a, &b| {
+        (&routes[a].path, &routes[a].method, a).cmp(&(&routes[b].path, &routes[b].method, b))
+    });
+    let mut new_rels = new_rels;
+    {
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for &i in &file_order {
+            let rel = new_rels[&i].clone();
+            let mut cand = rel.clone();
+            let mut n = 2;
+            while seen.contains(&cand) {
+                let stem = rel
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("endpoint");
+                cand = rel.with_file_name(format!("{}-{}.yaml", stem, n));
+                n += 1;
+            }
+            seen.insert(cand.clone());
+            new_rels.insert(i, cand);
+        }
+    }
+
+    for (ri, route) in routes.iter().enumerate() {
         let source = SourceInfo {
             framework: if route.framework.is_empty() {
                 framework.clone()
@@ -436,7 +485,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                 line_only,
             });
         } else {
-            let rel = naming::endpoint_rel_path(&route.method, &route.path);
+            let rel = new_rels[&ri].clone();
             let mut path = api_dir.join(&rel);
             let mut n = 2;
             while taken_paths.contains(&path) || path.exists() {
@@ -447,9 +496,7 @@ pub fn scan_project(project: &Project, opts: &ScanOptions) -> Result<ScanReport>
                 path = api_dir.join(rel.with_file_name(format!("{}-{}.yaml", stem, n)));
                 n += 1;
             }
-            let id =
-                naming::unique_id(&naming::endpoint_id(&route.method, &route.path), &taken_ids);
-            taken_ids.insert(id.clone());
+            let id = new_ids[&ri].clone();
             taken_paths.insert(path.clone());
             let text = render_new_file(&id, route, &source);
             serde_yaml_rust2::from_str::<EndpointDef>(&text)
