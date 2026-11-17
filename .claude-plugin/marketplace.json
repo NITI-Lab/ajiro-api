@@ -9,7 +9,7 @@
       "name": "ajiro-api",
       "source": "./",
       "description": "Scan backend routes into YAML, run regression tests, and let the agent self-fix failures (skill + MCP server).",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": { "name": "NITI" },
       "homepage": "https://github.com/niti-lab/ajiro-api",
       "license": "MIT",
