@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-17
+
 ### Fixed
 
 - Hono scan: `.openapi(routes.list, handler)` now resolves `createRoute` objects grouped in a const object literal (local or imported through named, default, namespace imports and re-exports; `obj.prop`, `obj["prop"]`, nested `a.b.c`, shorthand properties, inline `createRoute({...})` values, `as const` / `satisfies` wrappers), so these routes keep their mount prefix instead of falling back to the orphan path.
