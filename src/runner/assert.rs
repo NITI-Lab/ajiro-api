@@ -6,7 +6,10 @@ use super::jsonpath::{self, json_eq, Diff, Op};
 use super::redact::Redactor;
 use crate::model::{Expect, SchemaRef};
 use crate::report::Failure;
-use regex::Regex;
+use regex::RegexBuilder;
+
+/// Maximum compiled size for user-provided regex patterns (ReDoS mitigation).
+const REGEX_SIZE_LIMIT: usize = 1_000_000;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -101,7 +104,10 @@ pub fn check(ctx: &Context) -> Outcome {
             None => false,
             Some(a) => {
                 if expected.len() >= 2 && expected.starts_with('/') && expected.ends_with('/') {
-                    match Regex::new(&expected[1..expected.len() - 1]) {
+                    match RegexBuilder::new(&expected[1..expected.len() - 1])
+                        .size_limit(REGEX_SIZE_LIMIT)
+                        .build()
+                    {
                         Ok(re) => re.is_match(a),
                         Err(_) => false,
                     }
@@ -365,7 +371,8 @@ fn load_schema_file(path: &Path) -> Result<Value, String> {
         Some("yaml") | Some("yml")
     );
     if is_yaml {
-        serde_yaml::from_str(&text).map_err(|e| format!("invalid schema {}: {}", path.display(), e))
+        serde_yaml_rust2::from_str(&text)
+            .map_err(|e| format!("invalid schema {}: {}", path.display(), e))
     } else {
         serde_json::from_str(&text)
             .map_err(|e| format!("invalid JSON in schema {}: {}", path.display(), e))
@@ -544,7 +551,11 @@ fn eval_matcher(op: &str, arg: &Value, actual: Option<&Value>) -> (bool, String)
                     None => false,
                 },
                 "$regex" => match (arg.as_str(), a.as_str()) {
-                    (Some(p), Some(s)) => Regex::new(p).map(|re| re.is_match(s)).unwrap_or(false),
+                    (Some(p), Some(s)) => RegexBuilder::new(p)
+                        .size_limit(REGEX_SIZE_LIMIT)
+                        .build()
+                        .map(|re| re.is_match(s))
+                        .unwrap_or(false),
                     _ => false,
                 },
                 "$contains" => match a {
