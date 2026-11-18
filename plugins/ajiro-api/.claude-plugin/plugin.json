@@ -8,6 +8,7 @@
   "repository": "https://github.com/niti-lab/ajiro-api",
   "documentationUrl": "https://github.com/NITI-Lab/ajiro-api#readme",
   "supportUrl": "https://github.com/NITI-Lab/ajiro-api/issues",
+  "privacyPolicyUrl": "https://nititech.jp/%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%83%9D%E3%83%AA%E3%82%B7%E3%83%BC/",
   "license": "MIT",
   "keywords": ["api", "testing", "openapi", "regression", "mock", "hono", "fastapi", "nextjs", "express", "go"]
 }
