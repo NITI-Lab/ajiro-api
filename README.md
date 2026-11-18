@@ -2,7 +2,7 @@
 
 **Let your coding agent test the APIs it writes.**
 
-[![npm](https://img.shields.io/npm/v/ajiro-api?label=npm)](https://www.npmjs.com/package/ajiro-api) [![crates.io](https://img.shields.io/crates/v/ajiro-api)](https://crates.io/crates/ajiro-api) [![CI](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml/badge.svg)](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/ajiro-api?label=npm)](https://www.npmjs.com/package/ajiro-api) [![crates.io](https://img.shields.io/crates/v/ajiro-api)](https://crates.io/crates/ajiro-api) [![CI](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml/badge.svg)](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.NITI--Lab%2Fajiro--api-blue)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.NITI-Lab/ajiro-api) [![NITI-Lab/ajiro-api MCP server](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api/badges/score.svg)](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api)
 
 English | [日本語](README.ja.md)
 
@@ -123,7 +123,7 @@ Install the plugin to get the skill (the scan -> test -> fix -> re-run procedure
 
 The skill activates when the agent implements or changes HTTP API endpoints, or when you ask it to test or verify an API. See [skills/ajiro-api/SKILL.md](skills/ajiro-api/SKILL.md).
 
-To use only the MCP server, add this to `.mcp.json`:
+The MCP server is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.NITI-Lab/ajiro-api) as `io.github.NITI-Lab/ajiro-api` and on [Glama](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api), so any MCP client can use it. To use only the MCP server, add this to `.mcp.json` (or your client's MCP settings):
 
 ```json
 {
@@ -131,6 +131,12 @@ To use only the MCP server, add this to `.mcp.json`:
     "ajiro-api": { "command": "npx", "args": ["-y", "ajiro-api", "mcp"] }
   }
 }
+```
+
+Or, in Claude Code:
+
+```bash
+claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
 
 Tools: `scan`, `test`, `list`, `validate`, `get_endpoint`, `schema`.
