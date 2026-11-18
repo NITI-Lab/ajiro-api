@@ -4,6 +4,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-18
+
+### Added
+
+- `server.json` for the official MCP Registry; the server is listed as `io.github.NITI-Lab/ajiro-api`.
+- A plugin icon (`.claude-plugin/icon.png`) for the Claude plugin directory.
+
 ## [0.2.2] - 2026-11-18
 
 ### Changed
