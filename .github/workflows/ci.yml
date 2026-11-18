@@ -52,9 +52,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: |
-          for f in schema/*.schema.json .claude-plugin/*.json .mcp.json npm/ajiro-api/package.json; do
+          for f in schema/*.schema.json .claude-plugin/*.json .mcp.json npm/ajiro-api/package.json plugins/ajiro-api/.claude-plugin/plugin.json; do
             python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" && echo "ok $f"
           done
+      - name: plugin directory bundle matches the root plugin
+        run: |
+          diff -r skills plugins/ajiro-api/skills
+          cmp .claude-plugin/icon.png plugins/ajiro-api/.claude-plugin/icon.png
+          v=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          b=$(python3 -c "import json; print(json.load(open('plugins/ajiro-api/.claude-plugin/plugin.json'))['version'])")
+          test "$v" = "$b" || { echo "version mismatch: $v vs $b"; exit 1; }
 
   release-build:
     name: release build and startup time

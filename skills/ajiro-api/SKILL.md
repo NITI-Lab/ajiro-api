@@ -70,6 +70,6 @@ After implementing or changing endpoints:
 | `ajiro-api import postman <file>` / `import bruno <dir>` | Migrate existing collections |
 | `ajiro-api docs -o api-docs.html` | Single-file HTML API reference |
 
-If the MCP server is registered (this plugin registers `ajiro-api mcp`), the tools `scan`, `test`, `list`, `validate`, `get_endpoint` and `schema` do the same as the commands above.
+If the ajiro-api MCP server is registered (the plugin from the `NITI-Lab/ajiro-api` marketplace registers `ajiro-api mcp`), the tools `scan`, `test`, `list`, `validate`, `get_endpoint` and `schema` do the same as the commands above.
 
 Full YAML syntax and examples: [reference.md](reference.md).
