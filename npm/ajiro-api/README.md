@@ -69,7 +69,7 @@ Claude Code plugin (a skill for the scan -> test -> fix loop, plus the MCP serve
 /plugin install ajiro-api@ajiro-api
 ```
 
-MCP server only (`.mcp.json`):
+MCP server only: it is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.NITI-Lab/ajiro-api) as `io.github.NITI-Lab/ajiro-api` and on [Glama](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api). Add it to `.mcp.json` or your client's MCP settings:
 
 ```json
 {

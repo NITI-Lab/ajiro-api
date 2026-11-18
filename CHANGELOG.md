@@ -6,6 +6,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Added
 
+- The READMEs mention the official MCP Registry and Glama listings (with badges) and `claude mcp add` for the MCP server alone.
 - `plugins/ajiro-api/`: a skill-only plugin bundle for the Claude plugin directory. The marketplace plugin at the repository root (skill + MCP server) is unchanged.
 
 ## [0.2.3] - 2026-11-18

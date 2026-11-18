@@ -2,7 +2,7 @@
 
 **AIが書いたAPIを、AI自身にテストさせる。**
 
-[![npm](https://img.shields.io/npm/v/ajiro-api?label=npm)](https://www.npmjs.com/package/ajiro-api) [![crates.io](https://img.shields.io/crates/v/ajiro-api)](https://crates.io/crates/ajiro-api) [![CI](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml/badge.svg)](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/ajiro-api?label=npm)](https://www.npmjs.com/package/ajiro-api) [![crates.io](https://img.shields.io/crates/v/ajiro-api)](https://crates.io/crates/ajiro-api) [![CI](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml/badge.svg)](https://github.com/niti-lab/ajiro-api/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.NITI--Lab%2Fajiro--api-blue)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.NITI-Lab/ajiro-api) [![NITI-Lab/ajiro-api MCP server](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api/badges/score.svg)](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api)
 
 [English](README.md) | 日本語
 
@@ -123,7 +123,7 @@ mock:              # ajiro-api mock で使う
 
 スキルは、エージェントがHTTP APIのエンドポイントを実装・変更したときや、APIのテスト・検証を頼まれたときに働きます。手順の内容は [skills/ajiro-api/SKILL.md](skills/ajiro-api/SKILL.md) にあります。
 
-MCPサーバーだけを使う場合は、`.mcp.json` に次を追加します。
+MCPサーバーは[公式のMCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.NITI-Lab/ajiro-api)に `io.github.NITI-Lab/ajiro-api` として、また[Glama](https://glama.ai/mcp/servers/NITI-Lab/ajiro-api)にも掲載されているので、Claude Code以外のMCPクライアントからも使えます。MCPサーバーだけを使う場合は、`.mcp.json`（またはクライアントのMCP設定）に次を追加します。
 
 ```json
 {
@@ -131,6 +131,12 @@ MCPサーバーだけを使う場合は、`.mcp.json` に次を追加します�
     "ajiro-api": { "command": "npx", "args": ["-y", "ajiro-api", "mcp"] }
   }
 }
+```
+
+Claude Codeなら、次のコマンドでも追加できます。
+
+```bash
+claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
 
 公開しているツールは `scan`、`test`、`list`、`validate`、`get_endpoint`、`schema` です。
