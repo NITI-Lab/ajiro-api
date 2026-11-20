@@ -235,6 +235,7 @@ pub fn main() -> i32 {
     let cli = Cli::parse();
     let dir = work_dir(&cli);
     let name = command_name(&cli.command);
+    let update = crate::update_check::start(name, wants_json(&cli.command));
     let result = match &cli.command {
         Command::Init(a) => crate::init::run_cli(&dir, a),
         Command::Scan(a) => crate::scan::run_cli(&dir, a),
@@ -250,6 +251,9 @@ pub fn main() -> i32 {
         Command::Telemetry(a) => crate::telemetry::run_cli(a),
     };
     crate::telemetry::record(name);
+    if let Some(u) = update {
+        u.finish();
+    }
     match result {
         Ok(code) => code,
         Err(e) => {

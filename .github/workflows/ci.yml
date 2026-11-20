@@ -62,6 +62,11 @@ jobs:
           v=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
           b=$(python3 -c "import json; print(json.load(open('plugins/ajiro-api/.claude-plugin/plugin.json'))['version'])")
           test "$v" = "$b" || { echo "version mismatch: $v vs $b"; exit 1; }
+      - name: pinned versions in the READMEs match Cargo.toml
+        run: |
+          c=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          bad=$(grep -noE 'ajiro-api@[0-9]+\.[0-9]+\.[0-9]+' README.md README.ja.md npm/ajiro-api/README.md | grep -v "ajiro-api@$c\$" || true)
+          test -z "$bad" || { echo "README versions differ from Cargo.toml ($c):"; echo "$bad"; exit 1; }
 
   release-build:
     name: release build and startup time

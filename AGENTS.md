@@ -36,7 +36,8 @@ CI runs fmt, clippy (warnings are errors) and tests on Linux, macOS and Windows.
 - Changing CLI flags in `src/cli.rs` means updating `docs/cli-reference.md` and both READMEs.
 - Exit codes: `0` ok, `1` tests failed / drift / validation errors, `2` the tool itself could not do its job.
 - Secrets are masked as `***` in all output. Never log tokens or passwords.
-- Telemetry is off by default and counts command names only. Do not add anything that sends data without explicit consent.
+- Telemetry is off by default and counts command names only. Do not add anything that sends data without explicit consent. The one exception is the update check (`src/update_check.rs`): on by default, a plain GET to the npm registry at most once a day, only when stderr is a terminal, never for `mcp` / `--json` / `CI`, and off with `AJIRO_API_NO_UPDATE_CHECK=1` or `DO_NOT_TRACK=1`. It must never send anything about the user or project.
+- The READMEs pin the npm version in examples (`ajiro-api@x.y.z`). Bump them on release; CI checks they match `Cargo.toml`.
 - Keep startup fast (target: `--version` under 0.1 s) and scan of 100 endpoints under 3 s.
 - Each supported framework needs a fixture project and a scan snapshot test.
 - Do not add runtime dependencies on Node or Python; the binary must be self-contained.
