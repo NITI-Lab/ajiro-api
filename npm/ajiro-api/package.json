@@ -1,7 +1,7 @@
 {
   "name": "ajiro-api",
   "mcpName": "io.github.NITI-Lab/ajiro-api",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Let Claude Code and Codex test the APIs they write: scan Next.js, Hono, FastAPI, Express and Go routes into one YAML file per endpoint, run them as regression tests, serve them as mocks.",
   "keywords": [
     "api", "api-testing", "regression-testing", "testing", "e2e", "mock-server", "mock", "openapi",
@@ -21,10 +21,10 @@
   "files": ["bin/", "README.md", "LICENSE"],
   "engines": { "node": ">=18" },
   "optionalDependencies": {
-    "@niti-lab/ajiro-api-linux-x64": "0.2.3",
-    "@niti-lab/ajiro-api-linux-arm64": "0.2.3",
-    "@niti-lab/ajiro-api-darwin-x64": "0.2.3",
-    "@niti-lab/ajiro-api-darwin-arm64": "0.2.3",
-    "@niti-lab/ajiro-api-win32-x64": "0.2.3"
+    "@niti-lab/ajiro-api-linux-x64": "0.2.4",
+    "@niti-lab/ajiro-api-linux-arm64": "0.2.4",
+    "@niti-lab/ajiro-api-darwin-x64": "0.2.4",
+    "@niti-lab/ajiro-api-darwin-arm64": "0.2.4",
+    "@niti-lab/ajiro-api-win32-x64": "0.2.4"
   }
 }

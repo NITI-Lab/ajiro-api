@@ -52,6 +52,16 @@ cargo install ajiro-api
 
 以降のコマンドは、`ajiro-api` が使えない場合は `npx -y ajiro-api` に読み替えてください。
 
+`npx -y ajiro-api` は起動のたびに最新版を取得します。手元で試すには手軽ですが、CI など自動で回す環境では版を固定してください。
+
+```bash
+# 版を指定して実行
+npx -y ajiro-api@0.2.4 test
+
+# または devDependencies に入れ、lockfile で版を固定
+npm i -D ajiro-api@0.2.4
+```
+
 ### 使う
 
 ```bash
@@ -138,6 +148,8 @@ Claude Codeなら、次のコマンドでも追加できます。
 ```bash
 claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
+
+知らないうちに版が変わらないよう、版を固定することもできます（`args` に `ajiro-api@0.2.4`、または `npx -y ajiro-api@0.2.4 mcp`）。
 
 公開しているツールは `scan`、`test`、`list`、`validate`、`get_endpoint`、`schema` です。
 
@@ -234,6 +246,7 @@ Postman・Brunoはどちらも優れたツールで、人間がGUIでリクエ�
 
 - ローカルファースト。API定義やテスト結果をサーバーへ送ることはありません。
 - 利用統計は初期状態でオフです。`ajiro-api telemetry on` で同意した場合のみ、匿名のコマンド実行回数（コマンド名・バージョン・OS）を扱います。パス、URL、API定義は含みません。`DO_NOT_TRACK=1` で常に無効になります。
+- 更新の確認：ターミナルでコマンドを実行したとき、1日に1回まで npm registry に最新版を問い合わせ、新しい版があれば1行で知らせます。問い合わせるのは版番号だけで、利用者やプロジェクトの情報は送りません。`mcp`、`--json`、ターミナル以外への出力、`CI` が設定されている環境では行いません。`AJIRO_API_NO_UPDATE_CHECK=1`（または `DO_NOT_TRACK=1`）で無効にできます。
 - 秘密情報は `.env` 参照（`{{ env.NAME }}`）のみとし、YAMLには書きません。出力ログではトークンやパスワードを `***` で伏せます。
 
 ## ロードマップ

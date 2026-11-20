@@ -52,6 +52,16 @@ cargo install ajiro-api
 
 If `ajiro-api` is not on your PATH, replace it with `npx -y ajiro-api` in the commands below.
 
+`npx -y ajiro-api` fetches the latest release every time it starts. That is handy for trying it out, but in CI and other automated runs, pin the version instead:
+
+```bash
+# run a fixed version
+npx -y ajiro-api@0.2.4 test
+
+# or add it to devDependencies and let the lockfile pin it
+npm i -D ajiro-api@0.2.4
+```
+
 ### Use
 
 ```bash
@@ -138,6 +148,8 @@ Or, in Claude Code:
 ```bash
 claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
+
+To keep the server from changing under you, pin the version (`ajiro-api@0.2.4` in `args`, or `npx -y ajiro-api@0.2.4 mcp`).
 
 Tools: `scan`, `test`, `list`, `validate`, `get_endpoint`, `schema`.
 
@@ -234,6 +246,7 @@ Postman and Bruno are good tools for humans building requests in a GUI, and Ajir
 
 - Local-first: API definitions and test results are never sent to a server.
 - Usage statistics are off by default. Only if you run `ajiro-api telemetry on` are anonymous command counts (command name, version, OS) kept; no paths, URLs or API definitions. `DO_NOT_TRACK=1` always disables it.
+- Update check: when you run a command in a terminal, ajiro-api asks the npm registry for the latest version at most once a day and prints a one-line notice if a newer one exists. Only the version is requested; nothing about you or your project is sent. It is skipped for `mcp`, `--json`, non-terminal output and when `CI` is set. Turn it off with `AJIRO_API_NO_UPDATE_CHECK=1` (or `DO_NOT_TRACK=1`).
 - Secrets are referenced from `.env` only (`{{ env.NAME }}`), never written in YAML. Tokens and passwords are masked as `***` in output.
 
 ## Roadmap

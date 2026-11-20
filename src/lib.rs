@@ -1,7 +1,7 @@
 //! Ajiro API — API definitions, regression tests and mocks for AI coding agents.
 //!
 //! Module ownership (see CONTRIBUTING.md):
-//! - `model`, `config`, `project`, `naming`, `report`, `cli`, `telemetry`, `schema`: core
+//! - `model`, `config`, `project`, `naming`, `report`, `cli`, `telemetry`, `update_check`, `schema`: core
 //! - `init`, `scan`: route discovery
 //! - `runner`: `test` command (HTTP execution, assertions, reporters)
 //! - `mcp`, `mock`, `openapi`, `importers`, `htmldoc`: integrations
@@ -23,6 +23,7 @@ pub mod runner;
 pub mod scan;
 pub mod schema;
 pub mod telemetry;
+pub mod update_check;
 
 /// Process exit codes used by every command.
 pub mod exit {

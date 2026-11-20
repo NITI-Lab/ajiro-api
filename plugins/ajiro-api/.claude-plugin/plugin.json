@@ -1,7 +1,7 @@
 {
   "name": "ajiro-api",
   "displayName": "Ajiro API",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Scan backend routes into per-endpoint YAML, run them as regression tests and fix failures automatically. Skill for the ajiro-api CLI.",
   "author": { "name": "NITI" },
   "homepage": "https://github.com/niti-lab/ajiro-api",

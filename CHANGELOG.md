@@ -4,8 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-20
+
 ### Added
 
+- Update notice: in a terminal, ajiro-api checks the npm registry for a newer version at most once a day and prints a one-line notice to stderr. It is skipped for `mcp`, `--json`, non-terminal output and `CI`, and turned off with `AJIRO_API_NO_UPDATE_CHECK=1` or `DO_NOT_TRACK=1`.
+- The READMEs show how to pin the version (`npx -y ajiro-api@0.2.4`, `npm i -D`) for CI and MCP setups; CI checks the pinned version matches `Cargo.toml`.
 - The READMEs mention the official MCP Registry and Glama listings (with badges) and `claude mcp add` for the MCP server alone.
 - `plugins/ajiro-api/`: a skill-only plugin bundle for the Claude plugin directory. The marketplace plugin at the repository root (skill + MCP server) is unchanged.
 
