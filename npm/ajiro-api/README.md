@@ -24,6 +24,8 @@ npx -y ajiro-api scan     # one YAML file per endpoint under api/
 npx -y ajiro-api test     # run every endpoint and check the responses
 ```
 
+`npx -y ajiro-api` fetches the latest release on every run. In CI and other automated runs, pin the version: `npx -y ajiro-api@0.2.3 test`, or `npm i -D ajiro-api@0.2.3` and let the lockfile pin it.
+
 Endpoints without tests get a safe smoke check (GET, HEAD and OPTIONS only). Add `tests:` yourself, or ask your agent to.
 
 ## What a test looks like

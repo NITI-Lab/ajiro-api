@@ -52,6 +52,16 @@ cargo install ajiro-api
 
 If `ajiro-api` is not on your PATH, replace it with `npx -y ajiro-api` in the commands below.
 
+`npx -y ajiro-api` fetches the latest release every time it starts. That is handy for trying it out, but in CI and other automated runs, pin the version instead:
+
+```bash
+# run a fixed version
+npx -y ajiro-api@0.2.3 test
+
+# or add it to devDependencies and let the lockfile pin it
+npm i -D ajiro-api@0.2.3
+```
+
 ### Use
 
 ```bash
@@ -138,6 +148,8 @@ Or, in Claude Code:
 ```bash
 claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
+
+To keep the server from changing under you, pin the version (`ajiro-api@0.2.3` in `args`, or `npx -y ajiro-api@0.2.3 mcp`).
 
 Tools: `scan`, `test`, `list`, `validate`, `get_endpoint`, `schema`.
 
