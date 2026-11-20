@@ -1,6 +1,6 @@
 [package]
 name = "ajiro-api"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "Let Claude Code and Codex test the APIs they write: scans backend routes into one YAML file per endpoint, runs them as regression tests and serves them as mocks"
 license = "MIT"

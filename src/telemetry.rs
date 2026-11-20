@@ -19,15 +19,21 @@ struct State {
     counts: BTreeMap<String, u64>,
 }
 
-fn state_path() -> Option<PathBuf> {
+/// The user config directory of ajiro-api (`AJIRO_API_CONFIG_DIR`, else
+/// `$XDG_CONFIG_HOME/ajiro-api`, `%APPDATA%/ajiro-api` or `~/.config/ajiro-api`).
+pub fn config_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("AJIRO_API_CONFIG_DIR") {
-        return Some(PathBuf::from(p).join("telemetry.json"));
+        return Some(PathBuf::from(p));
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("ajiro-api").join("telemetry.json"))
+    Some(base.join("ajiro-api"))
+}
+
+fn state_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("telemetry.json"))
 }
 
 fn load() -> State {
@@ -47,7 +53,7 @@ fn save(s: &State) -> Result<()> {
     Ok(())
 }
 
-fn do_not_track() -> bool {
+pub(crate) fn do_not_track() -> bool {
     std::env::var("DO_NOT_TRACK")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false)
