@@ -56,10 +56,10 @@ cargo install ajiro-api
 
 ```bash
 # 版を指定して実行
-npx -y ajiro-api@0.2.4 test
+npx -y ajiro-api@0.2.5 test
 
 # または devDependencies に入れ、lockfile で版を固定
-npm i -D ajiro-api@0.2.4
+npm i -D ajiro-api@0.2.5
 ```
 
 ### 使う
@@ -149,7 +149,7 @@ Claude Codeなら、次のコマンドでも追加できます。
 claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
 
-知らないうちに版が変わらないよう、版を固定することもできます（`args` に `ajiro-api@0.2.4`、または `npx -y ajiro-api@0.2.4 mcp`）。
+知らないうちに版が変わらないよう、版を固定することもできます（`args` に `ajiro-api@0.2.5`、または `npx -y ajiro-api@0.2.5 mcp`）。
 
 公開しているツールは `scan`、`test`、`list`、`validate`、`get_endpoint`、`schema` です。
 

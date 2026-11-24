@@ -4,6 +4,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-24
+
+### Changed
+
+- Dependency updates: clap 4.6.9, uuid 1.29.3, regex 1.13.2.
+- The plugin directory bundle README no longer names the icon file by path, so the directory review stops flagging it.
+
 ## [0.2.4] - 2026-11-20
 
 ### Added
