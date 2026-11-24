@@ -56,10 +56,10 @@ If `ajiro-api` is not on your PATH, replace it with `npx -y ajiro-api` in the co
 
 ```bash
 # run a fixed version
-npx -y ajiro-api@0.2.4 test
+npx -y ajiro-api@0.2.5 test
 
 # or add it to devDependencies and let the lockfile pin it
-npm i -D ajiro-api@0.2.4
+npm i -D ajiro-api@0.2.5
 ```
 
 ### Use
@@ -149,7 +149,7 @@ Or, in Claude Code:
 claude mcp add ajiro-api -- npx -y ajiro-api mcp
 ```
 
-To keep the server from changing under you, pin the version (`ajiro-api@0.2.4` in `args`, or `npx -y ajiro-api@0.2.4 mcp`).
+To keep the server from changing under you, pin the version (`ajiro-api@0.2.5` in `args`, or `npx -y ajiro-api@0.2.5 mcp`).
 
 Tools: `scan`, `test`, `list`, `validate`, `get_endpoint`, `schema`.
 
