@@ -4,6 +4,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- The skill and the plugin directory bundle README no longer tell the reader to add the MCP server through the marketplace plugin. The plugin directory refuses a plugin whose text adds a server it does not declare. The marketplace plugin still registers the MCP server as before.
+
 ## [0.2.5] - 2026-11-24
 
 ### Changed
