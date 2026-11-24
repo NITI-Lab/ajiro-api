@@ -9,4 +9,4 @@ For the skill plus the MCP server, add this repository as a marketplace instead:
 /plugin install ajiro-api@ajiro-api
 ```
 
-Do not edit the files here by hand. `skills/` and `.claude-plugin/icon.png` are copies of the ones at the repository root, and CI fails if they drift.
+Do not edit the files here by hand. The skill and the listing icon are copies of the ones at the repository root, and CI fails if they drift.
